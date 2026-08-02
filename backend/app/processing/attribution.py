@@ -1,5 +1,5 @@
 import re
-from backend.app.storage.vector_store import similarity_search
+from ..storage.vector_store import similarity_search
 
 
 def _split_sentences(text: str) -> list[str]:

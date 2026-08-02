@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.middleware.rate_limiter import RateLimitMiddleware
-from backend.app.api.routes import router as papers_router
+from .middleware.rate_limiter import RateLimitMiddleware
+from .api.routes import router as papers_router
 
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
@@ -14,7 +14,7 @@ ALLOWED_ORIGINS = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from backend.app.storage.vector_store import purge_expired
+    from .storage.vector_store import purge_expired
     purge_expired(max_age_days=30)
     yield
 

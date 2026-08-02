@@ -1,6 +1,6 @@
 import json
-from backend.app.llm_client import gemini_generate_json
-from backend.app.storage.vector_store import similarity_search
+from ..llm_client import gemini_generate_json
+from ..storage.vector_store import similarity_search
 
 COMPARE_PROMPT = """\
 You are a research assistant. Below are extracted excerpts from {n} \

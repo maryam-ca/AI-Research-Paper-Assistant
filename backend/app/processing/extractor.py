@@ -1,5 +1,5 @@
 import json
-from backend.app.llm_client import gemini_generate_json
+from ..llm_client import gemini_generate_json
 
 _REQUIRED_KEYS = [
     "problem_statement",

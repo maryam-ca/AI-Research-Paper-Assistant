@@ -5,15 +5,15 @@ from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from backend.app.ingestion.pdf_loader import extract_text_from_pdf
-from backend.app.storage.vector_store import chunk_text, embed_and_store
-from backend.app.processing.summarizer import (
+from ..ingestion.pdf_loader import extract_text_from_pdf
+from ..storage.vector_store import chunk_text, embed_and_store
+from .summarizer import (
     generate_executive_summary,
     generate_detailed_summary,
     generate_key_findings,
 )
-from backend.app.processing.extractor import extract_key_elements
-from backend.app.processing.attribution import flag_summaries
+from .extractor import extract_key_elements
+from .attribution import flag_summaries
 
 
 class PaperState(TypedDict):

@@ -1,4 +1,4 @@
-from backend.app.llm_client import gemini_generate
+from ..llm_client import gemini_generate
 
 
 def generate_executive_summary(paper_text: str) -> str:

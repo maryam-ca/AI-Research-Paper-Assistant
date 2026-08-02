@@ -1,5 +1,5 @@
-from backend.app.llm_client import gemini_generate
-from backend.app.storage.vector_store import similarity_search
+from ..llm_client import gemini_generate
+from ..storage.vector_store import similarity_search
 
 QA_PROMPT = """\
 You are a research assistant. Answer the user's question using ONLY the \

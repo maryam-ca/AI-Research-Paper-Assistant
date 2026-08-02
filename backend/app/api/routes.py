@@ -5,11 +5,11 @@ import time
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from pydantic import BaseModel
 
-from backend.app.ingestion.metadata_fetcher import fetch_arxiv_metadata, fetch_doi_metadata
-from backend.app.processing.graph import build_graph
-from backend.app.processing.qa import answer_question
-from backend.app.processing.compare import compare_papers
-from backend.app.processing.citations import generate_citation
+from ..ingestion.metadata_fetcher import fetch_arxiv_metadata, fetch_doi_metadata
+from ..processing.graph import build_graph
+from ..processing.qa import answer_question
+from ..processing.compare import compare_papers
+from ..processing.citations import generate_citation
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
 
@@ -170,7 +170,7 @@ def citation(paper_id: str, style: str = Query("apa")):
 
 @router.post("/cleanup")
 def cleanup_expired():
-    from backend.app.storage.vector_store import purge_expired
+    from ..storage.vector_store import purge_expired
     cutoff = time.time() - (30 * 86400)
     expired_ids = [pid for pid, p in _library.items() if p.get("created_at", 0) < cutoff]
     deleted_vectors = 0
