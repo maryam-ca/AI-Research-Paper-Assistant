@@ -1,4 +1,4 @@
-import asyncio
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +6,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.middleware.rate_limiter import RateLimitMiddleware
 from backend.app.api.routes import router as papers_router
 
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    os.environ.get("FRONTEND_URL", ""),
+]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -20,7 +25,7 @@ app.add_middleware(RateLimitMiddleware, max_papers=10, window=3600)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[o for o in ALLOWED_ORIGINS if o],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
