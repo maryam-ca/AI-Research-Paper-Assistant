@@ -1,12 +1,16 @@
 import os
 import chromadb
 import google.generativeai as genai
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-EMBEDDING_MODEL = "models/text-embedding-004"
-EMBEDDING_DIM = 768
+EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_DIM = 3072
 
 _client = None
 _collection = None
+
+_CHROMA_DIR = str(Path(__file__).resolve().parent.parent.parent / "chroma")
 
 
 def _get_collection():
@@ -16,7 +20,7 @@ def _get_collection():
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is not set")
         genai.configure(api_key=api_key)
-        _client = chromadb.PersistentClient()
+        _client = chromadb.PersistentClient(path=_CHROMA_DIR)
         _collection = _client.get_or_create_collection(
             name="papers",
             metadata={"hnsw:space": "cosine"},
@@ -60,7 +64,8 @@ def embed_and_store(paper_id: str, chunks: list[dict]):
         for c in chunks
     ]
 
-    embeddings = [_embed(doc) for doc in documents]
+    with ThreadPoolExecutor(max_workers=min(10, len(documents))) as executor:
+        embeddings = list(executor.map(_embed, documents))
 
     collection.add(
         ids=ids,

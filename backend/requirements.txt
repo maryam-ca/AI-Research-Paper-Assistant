@@ -6,3 +6,6 @@ google-generativeai
 chromadb
 pypdf
 python-multipart
+python-dotenv
+docx2txt
+striprtf

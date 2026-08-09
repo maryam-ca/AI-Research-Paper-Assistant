@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
 
-from ..ingestion.pdf_loader import extract_text_from_pdf
+from ..ingestion.text_extractor import extract_text
 from ..storage.vector_store import chunk_text, embed_and_store
 from .summarizer import (
     generate_executive_summary,
@@ -34,7 +35,7 @@ class PaperState(TypedDict):
 
 def _node_extract(state: PaperState) -> PaperState:
     try:
-        pages = extract_text_from_pdf(state["file_path"])
+        pages = extract_text(state["file_path"])
         full_text = "\n\n".join(p["text"] for p in pages)
         return {"pages": pages, "full_text": full_text, "stage": "extract_text"}
     except Exception as e:
@@ -53,9 +54,13 @@ def _node_chunk_embed(state: PaperState) -> PaperState:
 def _node_summarize(state: PaperState) -> PaperState:
     try:
         text = state["full_text"]
-        executive_summary = generate_executive_summary(text)
-        detailed_summary = generate_detailed_summary(text)
-        key_findings = generate_key_findings(text)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_exec = executor.submit(generate_executive_summary, text)
+            future_det = executor.submit(generate_detailed_summary, text)
+            future_find = executor.submit(generate_key_findings, text)
+            executive_summary = future_exec.result()
+            detailed_summary = future_det.result()
+            key_findings = future_find.result()
         return {
             "executive_summary": executive_summary,
             "detailed_summary": detailed_summary,

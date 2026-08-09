@@ -25,6 +25,11 @@ def fetch_arxiv_metadata(arxiv_id: str) -> dict:
         for a in entry.findall("atom:author", ns)
     ]
     published = (entry.findtext("atom:published", "", ns) or "")[:10]
+    subjects = [
+        cat.get("term")
+        for cat in entry.findall("atom:category", ns)
+        if cat.get("term")
+    ]
 
     return {
         "title": title,
@@ -32,6 +37,7 @@ def fetch_arxiv_metadata(arxiv_id: str) -> dict:
         "abstract": abstract,
         "published_date": published,
         "source": f"arxiv:{arxiv_id}",
+        "subjects": subjects,
     }
 
 
