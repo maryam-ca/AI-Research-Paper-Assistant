@@ -24,10 +24,12 @@ ALLOWED_ORIGINS = [
 async def lifespan(app: FastAPI):
     try:
         from .storage import paper_store
-        expired_ids = paper_store.purge_expired(max_age_days=30)
+        await paper_store.get_pool()
+        from .storage.vector_store import get_pool as get_vec_pool
+        await get_vec_pool()
+        expired_ids = await paper_store.purge_expired(max_age_days=30)
         from .storage.vector_store import purge_expired
-        for pid in expired_ids:
-            purge_expired(max_age_days=30)
+        await purge_expired(max_age_days=30)
     except Exception:
         pass
     yield

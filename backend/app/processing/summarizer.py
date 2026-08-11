@@ -3,7 +3,7 @@ import re
 import math
 
 
-def generate_executive_summary(paper_text: str, instruction: str = "", length: str = "medium") -> str:
+async def generate_executive_summary(paper_text: str, instruction: str = "", length: str = "medium") -> str:
     length_instructions = {
         "short": "in 2-3 sentences (very concise)",
         "medium": "in 3-5 sentences",
@@ -19,10 +19,10 @@ def generate_executive_summary(paper_text: str, instruction: str = "", length: s
         f"{extra}\n\n"
         f"Paper text:\n{paper_text}"
     )
-    return gemini_generate(prompt)
+    return await gemini_generate(prompt)
 
 
-def generate_detailed_summary(paper_text: str, instruction: str = "", length: str = "medium") -> str:
+async def generate_detailed_summary(paper_text: str, instruction: str = "", length: str = "medium") -> str:
     length_instructions = {
         "short": "concise (2-3 paragraphs)",
         "medium": "standard detail (4-6 paragraphs)",
@@ -39,10 +39,10 @@ def generate_detailed_summary(paper_text: str, instruction: str = "", length: st
         f"{extra}\n\n"
         f"Paper text:\n{paper_text}"
     )
-    return gemini_generate(prompt)
+    return await gemini_generate(prompt)
 
 
-def generate_key_findings(paper_text: str, instruction: str = "", length: str = "medium") -> str:
+async def generate_key_findings(paper_text: str, instruction: str = "", length: str = "medium") -> str:
     length_instructions = {
         "short": "3-5 key findings",
         "medium": "5-8 key findings",
@@ -58,10 +58,10 @@ def generate_key_findings(paper_text: str, instruction: str = "", length: str = 
         f"{extra}\n\n"
         f"Paper text:\n{paper_text}"
     )
-    return gemini_generate(prompt)
+    return await gemini_generate(prompt)
 
 
-def regenerate_section(paper_text: str, section: str, instruction: str = "", length: str = "medium") -> str:
+async def regenerate_section(paper_text: str, section: str, instruction: str = "", length: str = "medium") -> str:
     generators = {
         "executive": generate_executive_summary,
         "detailed": generate_detailed_summary,
@@ -70,10 +70,10 @@ def regenerate_section(paper_text: str, section: str, instruction: str = "", len
     gen = generators.get(section)
     if not gen:
         raise ValueError(f"Unknown section: {section}. Must be one of: {list(generators.keys())}")
-    return gen(paper_text, instruction, length)
+    return await gen(paper_text, instruction, length)
 
 
-def generate_simplified_summary(paper_text: str, instruction: str = "") -> str:
+async def generate_simplified_summary(paper_text: str, instruction: str = "") -> str:
     extra = f"\n\nAdditional instructions from the user: {instruction}" if instruction else ""
     prompt = (
         "You are a research assistant explaining a paper to someone who is NEW to this field. "
@@ -88,7 +88,7 @@ def generate_simplified_summary(paper_text: str, instruction: str = "") -> str:
         f"{extra}\n\n"
         f"Paper text:\n{paper_text}"
     )
-    return gemini_generate(prompt)
+    return await gemini_generate(prompt)
 
 
 def compute_readability_scores(text: str) -> dict:
@@ -161,7 +161,7 @@ def count_syllables(word: str) -> int:
     return max(1, count)
 
 
-def translate_summary(summary: str, target_language: str) -> str:
+async def translate_summary(summary: str, target_language: str) -> str:
     language_names = {
         "es": "Spanish",
         "fr": "French",
@@ -185,10 +185,10 @@ def translate_summary(summary: str, target_language: str) -> str:
         f"Preserve any citations like [page X]. Do not add or remove information.\n\n"
         f"Summary:\n{summary}"
     )
-    return gemini_generate(prompt)
+    return await gemini_generate(prompt)
 
 
-def suggest_tags(paper_text: str) -> list[str]:
+async def suggest_tags(paper_text: str) -> list[str]:
     prompt = (
         "You are a research assistant. Analyze the following research paper and suggest 3-5 relevant tags "
         "that categorize the paper's topic, domain, methodology, and key concepts. "
@@ -199,7 +199,7 @@ def suggest_tags(paper_text: str) -> list[str]:
         "\"climate-science\", \"quantum-computing\", \"bioinformatics\", \"robotics\".\n\n"
         f"Paper text:\n{paper_text}"
     )
-    raw = gemini_generate(prompt, generation_config={"response_mime_type": "application/json"})
+    raw = await gemini_generate(prompt, generation_config={"response_mime_type": "application/json"})
     try:
         import json as _json
         tags = _json.loads(raw)

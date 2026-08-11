@@ -48,15 +48,15 @@ def _parse_elements(raw: str) -> dict:
     return {k: data[k] for k in _REQUIRED_KEYS}
 
 
-def extract_key_elements(paper_text: str) -> dict:
+async def extract_key_elements(paper_text: str) -> dict:
     prompt = _EXTRACTION_PROMPT.format(paper_text=paper_text)
-    raw = gemini_generate_json(prompt)
+    raw = await gemini_generate_json(prompt)
     return _parse_elements(raw)
 
 
-def extract_figures_tables(paper_text: str) -> dict:
+async def extract_figures_tables(paper_text: str) -> dict:
     prompt = FIGURES_TABLES_PROMPT.format(paper_text=paper_text)
-    raw = gemini_generate_json(prompt)
+    raw = await gemini_generate_json(prompt)
     try:
         data = json.loads(raw)
         figures = data.get("figures", [])

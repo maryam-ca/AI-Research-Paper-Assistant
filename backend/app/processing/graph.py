@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, END
@@ -33,34 +32,33 @@ class PaperState(TypedDict):
     error: str | None
 
 
-def _node_extract(state: PaperState) -> PaperState:
+async def _node_extract(state: PaperState) -> PaperState:
     try:
-        pages = extract_text(state["file_path"])
+        loop = asyncio.get_event_loop()
+        pages = await loop.run_in_executor(None, extract_text, state["file_path"])
         full_text = "\n\n".join(p["text"] for p in pages)
         return {"pages": pages, "full_text": full_text, "stage": "extract_text"}
     except Exception as e:
         return {"stage": "extract_text:failed", "error": str(e)}
 
 
-def _node_chunk_embed(state: PaperState) -> PaperState:
+async def _node_chunk_embed(state: PaperState) -> PaperState:
     try:
         chunks = chunk_text(state["pages"])
-        embed_and_store(state["paper_id"], chunks)
+        await embed_and_store(state["paper_id"], chunks)
         return {"chunks": chunks, "stage": "chunk_and_embed"}
     except Exception as e:
         return {"stage": "chunk_and_embed:failed", "error": str(e)}
 
 
-def _node_summarize(state: PaperState) -> PaperState:
+async def _node_summarize(state: PaperState) -> PaperState:
     try:
         text = state["full_text"]
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_exec = executor.submit(generate_executive_summary, text)
-            future_det = executor.submit(generate_detailed_summary, text)
-            future_find = executor.submit(generate_key_findings, text)
-            executive_summary = future_exec.result()
-            detailed_summary = future_det.result()
-            key_findings = future_find.result()
+        executive_summary, detailed_summary, key_findings = await asyncio.gather(
+            generate_executive_summary(text),
+            generate_detailed_summary(text),
+            generate_key_findings(text),
+        )
         return {
             "executive_summary": executive_summary,
             "detailed_summary": detailed_summary,
@@ -71,17 +69,17 @@ def _node_summarize(state: PaperState) -> PaperState:
         return {"stage": "summarize:failed", "error": str(e)}
 
 
-def _node_extract_elements(state: PaperState) -> PaperState:
+async def _node_extract_elements(state: PaperState) -> PaperState:
     try:
-        key_elements = extract_key_elements(state["full_text"])
+        key_elements = await extract_key_elements(state["full_text"])
         return {"key_elements": key_elements, "stage": "extract_elements"}
     except Exception as e:
         return {"stage": "extract_elements:failed", "error": str(e)}
 
 
-def _node_check_attribution(state: PaperState) -> PaperState:
+async def _node_check_attribution(state: PaperState) -> PaperState:
     try:
-        report = flag_summaries(
+        report = await flag_summaries(
             state["executive_summary"],
             state["detailed_summary"],
             state["key_findings"],
@@ -92,7 +90,7 @@ def _node_check_attribution(state: PaperState) -> PaperState:
         return {"stage": "check_attribution:failed", "error": str(e)}
 
 
-def _node_done(state: PaperState) -> PaperState:
+async def _node_done(state: PaperState) -> PaperState:
     return {"stage": "done"}
 
 

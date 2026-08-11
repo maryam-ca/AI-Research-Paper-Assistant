@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getPaper, askQuestion, getCitation, listNotes, createNote, updateNote, deleteNote, getNoteVersions, revertNote, getQaHistory, exportPaperMarkdown, getRelatedPapers, updateReadingProgress, regenerateSummary, generateFlashcards, computeReadability, extractFiguresTables, generateSimplifiedSummary, translateSummary, suggestTags, togglePin, detectContradictions, getReadNextRecommendations, API } from "../api/client";
+import { getPaper, askQuestion, getCitation, listNotes, createNote, updateNote, deleteNote, getNoteVersions, revertNote, getQaHistory, exportPaperMarkdown, getRelatedPapers, updateReadingProgress, regenerateSummary, generateFlashcards, computeReadability, extractFiguresTables, generateSimplifiedSummary, translateSummary, suggestTags, togglePin, detectContradictions, getReadNextRecommendations, API, uploadThumbnail, getPaperThumbnailUrl } from "../api/client";
 import PdfViewer from "../components/PdfViewer";
 import CitationGraph from "../components/CitationGraph";
 import WordCloud from "../components/WordCloud";
@@ -37,6 +37,24 @@ function SourceBadge({ paper }) {
   if (src.startsWith("arxiv:")) return <span className="bg-primary/10 text-primary text-[11px] font-semibold px-2.5 py-1 rounded-md border border-primary/30">arXiv</span>;
   if (src.startsWith("doi:")) return <span className="bg-tertiary/10 text-tertiary text-[11px] font-semibold px-2.5 py-1 rounded-md border border-tertiary/30">DOI</span>;
   return <span className="bg-surface-container text-on-surface-variant text-[11px] font-semibold px-2.5 py-1 rounded-md border border-outline-variant/40">PDF</span>;
+}
+
+function PaperThumb({ paperId, thumbVersion }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    setUrl(null);
+    if (!paperId) return;
+    const u = getPaperThumbnailUrl(paperId);
+    fetch(u, { method: "HEAD" }).then((r) => { if (r.ok) setUrl(u + "?v=" + thumbVersion); }).catch(() => {});
+  }, [paperId, thumbVersion]);
+  if (url) {
+    return <img src={url} alt="Thumbnail" className="w-full h-full object-cover object-top" />;
+  }
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/10 to-tertiary/10">
+      <span className="material-symbols-outlined text-on-surface-variant/30 text-[36px]">description</span>
+    </div>
+  );
 }
 
 function NotesTab({ paperId }) {
@@ -880,6 +898,8 @@ export default function PaperDetail() {
   const { id } = useParams();
   const nav = useNavigate();
   const [paper, setPaper] = useState(null);
+  const [thumbVersion, setThumbVersion] = useState(0);
+  const [thumbModal, setThumbModal] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("executive");
   const [chat, setChat] = useState([]);
@@ -1077,6 +1097,14 @@ export default function PaperDetail() {
             <button onClick={() => exportPaperMarkdown(id)} className="flex items-center gap-1.5 text-white/80 hover:text-white transition-colors text-[12px] font-medium">
               <span className="material-symbols-outlined text-[15px]">download</span>Export
             </button>
+            <label className="flex items-center gap-1.5 text-white/80 hover:text-white transition-colors text-[12px] font-medium cursor-pointer">
+              <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try { await uploadThumbnail(id, file); setThumbVersion(v => v + 1); } catch (err) { alert(err.message); }
+              }} />
+              <span className="material-symbols-outlined text-[15px]">image</span>Thumbnail
+            </label>
             <button onClick={() => {
               const summary = [paper.executive_summary, paper.detailed_summary, paper.key_findings].filter(Boolean).join("\n\n---\n\n");
               navigator.clipboard.writeText(summary || "No summary available");
@@ -1115,8 +1143,26 @@ export default function PaperDetail() {
           </button>
 
           <div className="mb-8">
-            <div className="flex items-center gap-2 mb-3">
-              <SourceBadge paper={paper} />
+            <div className="flex items-start gap-6">
+              <div className="relative group shrink-0">
+                <button
+                  onClick={() => { const u = getPaperThumbnailUrl(id); fetch(u, { method: "HEAD" }).then(r => { if (r.ok) { setThumbModal(u + "?v=" + thumbVersion); } }); }}
+                  className="block w-28 h-36 rounded-xl overflow-hidden bg-surface-container border border-outline-variant/40 hover:ring-2 hover:ring-primary/50 transition-all cursor-pointer"
+                >
+                  <PaperThumb paperId={id} thumbVersion={thumbVersion} />
+                </button>
+                <label className="absolute bottom-1.5 right-1.5 w-7 h-7 bg-surface-container border border-outline-variant/60 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer hover:bg-surface-container-high">
+                  <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try { await uploadThumbnail(id, file); setThumbVersion(v => v + 1); } catch (err) { alert(err.message); }
+                  }} />
+                  <span className="material-symbols-outlined text-on-surface-variant text-[15px]">edit</span>
+                </label>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-3">
+                  <SourceBadge paper={paper} />
               {meta?.published_date && <span className="text-body-sm text-on-surface-variant">{new Date(meta.published_date).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span>}
               {!meta?.published_date && paper.created_at && <span className="text-body-sm text-on-surface-variant">Added {new Date(paper.created_at * 1000).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</span>}
               <button onClick={async () => { const r = await togglePin(id); setPaper(p => ({ ...p, metadata: { ...p.metadata, pinned: r.pinned } })); }}
@@ -1144,6 +1190,8 @@ export default function PaperDetail() {
                   {readability.flesch_kincaid_grade !== null && <span>(Gr {readability.flesch_kincaid_grade})</span>}
                 </span>
               )}
+            </div>
+              </div>
             </div>
           </div>
 
@@ -1290,6 +1338,15 @@ export default function PaperDetail() {
           className="fixed bottom-6 right-6 w-14 h-14 bg-primary text-on-primary rounded-2xl shadow-lg shadow-primary/30 flex items-center justify-center z-50 hover:scale-105 active:scale-95 transition-transform">
           <span className="material-symbols-outlined text-2xl">chat</span>
         </button>
+      )}
+
+      {thumbModal && (
+        <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-8" onClick={() => setThumbModal(null)}>
+          <button onClick={() => setThumbModal(null)} className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center transition-colors">
+            <span className="material-symbols-outlined text-white text-[24px]">close</span>
+          </button>
+          <img src={thumbModal} alt="Thumbnail" className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+        </div>
       )}
     </>
   );

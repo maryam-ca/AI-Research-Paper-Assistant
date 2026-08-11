@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { listRecent, listActivities } from "../api/client";
+import { listRecent, listActivities, getPaperThumbnailUrl } from "../api/client";
 
 function Spinner({ size = 20 }) {
   return (
@@ -8,6 +8,42 @@ function Spinner({ size = 20 }) {
       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
       <path d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" fill="currentColor" className="opacity-75" />
     </svg>
+  );
+}
+
+function RecentPaperCard({ paper, onPreview }) {
+  const [thumbUrl, setThumbUrl] = useState(null);
+  useEffect(() => {
+    if (!paper.id) return;
+    const url = getPaperThumbnailUrl(paper.id);
+    fetch(url, { method: "HEAD" }).then((r) => { if (r.ok) setThumbUrl(url); }).catch(() => {});
+  }, [paper.id]);
+  return (
+    <Link to={`/paper/${paper.id}`}
+      className="block bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-5 hover:shadow-md transition-all no-underline group">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          {thumbUrl ? (
+            <div className="w-10 h-12 shrink-0 rounded-lg overflow-hidden bg-surface-container cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (onPreview) onPreview(thumbUrl); }}>
+              <img src={thumbUrl} alt="" className="w-full h-full object-cover object-top pointer-events-none" />
+            </div>
+          ) : (
+            <SourceBadge paper={paper} />
+          )}
+          <div className="min-w-0">
+            <h4 className="text-body-md text-on-surface group-hover:text-primary transition-colors truncate">{paper.filename || "Untitled"}</h4>
+            {paper.metadata?.authors?.length > 0 && (
+              <p className="text-body-sm text-on-surface-variant truncate">{paper.metadata.authors.slice(0, 2).join(", ")}</p>
+            )}
+          </div>
+        </div>
+        {paper.last_viewed && (
+          <span className="text-[11px] text-on-surface-variant shrink-0 ml-4">
+            {new Date(paper.last_viewed * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
+      </div>
+    </Link>
   );
 }
 
@@ -63,6 +99,7 @@ export default function Recent() {
   const [activities, setActivities] = useState([]);
   const [loadingPapers, setLoadingPapers] = useState(true);
   const [loadingActivities, setLoadingActivities] = useState(true);
+  const [thumbModal, setThumbModal] = useState(null);
 
   useEffect(() => {
     listRecent().then(setPapers).catch(() => setPapers([])).finally(() => setLoadingPapers(false));
@@ -102,25 +139,7 @@ export default function Recent() {
           ) : (
             <div className="space-y-3">
               {papers.map((paper) => (
-                <Link key={paper.id} to={`/paper/${paper.id}`}
-                  className="block bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-5 hover:shadow-md transition-all no-underline group">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <SourceBadge paper={paper} />
-                      <div className="min-w-0">
-                        <h4 className="text-body-md text-on-surface group-hover:text-primary transition-colors truncate">{paper.filename || "Untitled"}</h4>
-                        {paper.metadata?.authors?.length > 0 && (
-                          <p className="text-body-sm text-on-surface-variant truncate">{paper.metadata.authors.slice(0, 2).join(", ")}</p>
-                        )}
-                      </div>
-                    </div>
-                    {paper.last_viewed && (
-                      <span className="text-[11px] text-on-surface-variant shrink-0 ml-4">
-                        {new Date(paper.last_viewed * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                      </span>
-                    )}
-                  </div>
-                </Link>
+                <RecentPaperCard key={paper.id} paper={paper} onPreview={(url) => setThumbModal(url + "?v=" + Date.now())} />
               ))}
             </div>
           )}
@@ -157,6 +176,15 @@ export default function Recent() {
           )}
         </div>
       </div>
+
+      {thumbModal && (
+        <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-8 cursor-pointer" onClick={() => setThumbModal(null)}>
+          <button onClick={() => setThumbModal(null)} className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center transition-colors z-10">
+            <span className="material-symbols-outlined text-white text-[24px]">close</span>
+          </button>
+          <img src={thumbModal} alt="Thumbnail" className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
     </div>
   );
 }

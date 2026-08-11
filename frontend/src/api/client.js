@@ -50,6 +50,13 @@ export const fetchFromUrl = (url) => jsonPost("/papers/fetch-url", { url }, LT);
 export const listPapers = () => req("/papers");
 export const getPaper = (id) => req(`/papers/${id}`);
 export const getPaperFileUrl = (id) => `${API}/papers/${id}/file`;
+export const getPaperThumbnailUrl = (id) => `${API}/papers/${id}/thumbnail`;
+export const uploadThumbnail = (id, file) => {
+  const fd = new FormData(); fd.append("file", file);
+  return req(`/papers/${id}/thumbnail`, { method: "POST", body: fd }, LT);
+};
+export const deleteThumbnail = (id) =>
+  req(`/papers/${id}/thumbnail`, { method: "DELETE" }, LT);
 export const askQuestion = (id, question, history = []) =>
   jsonPost(`/papers/${id}/ask`, { question, history }, LT);
 export const comparePapers = (ids) => jsonPost("/papers/compare", { paper_ids: ids }, LT);

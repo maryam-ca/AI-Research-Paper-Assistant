@@ -8,4 +8,9 @@ export default defineConfig({
     port: 5173,
     strictPort: false,
   },
+  base: '/',
+  build: {
+    outDir: 'dist',
+    sourcemap: false,
+  },
 })

@@ -1,260 +1,255 @@
 import json
-import sqlite3
-import threading
-from pathlib import Path
+import os
+import time
+import uuid
+from typing import Optional
 
-_DB_PATH = Path(__file__).resolve().parent.parent.parent / "papers.db"
-_local = threading.local()
+from .database import get_pool, close_pool
 
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS papers (
+    paper_id         TEXT PRIMARY KEY,
+    filename         TEXT NOT NULL,
+    metadata         JSONB,
+    executive_summary TEXT,
+    detailed_summary  TEXT,
+    key_findings      TEXT,
+    key_elements      JSONB,
+    attribution_report JSONB,
+    created_at       DOUBLE PRECISION NOT NULL,
+    last_viewed      DOUBLE PRECISION,
+    source_file      TEXT,
+    reading_progress JSONB DEFAULT '{}',
+    status           TEXT DEFAULT 'to_read'
+);
 
-def _conn() -> sqlite3.Connection:
-    if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
-        _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA foreign_keys=ON")
-        _init_schema(_local.conn)
-    return _local.conn
+CREATE TABLE IF NOT EXISTS collections (
+    collection_id TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    description   TEXT DEFAULT '',
+    category      TEXT DEFAULT '',
+    color         TEXT DEFAULT '#3525cd',
+    created_at    DOUBLE PRECISION NOT NULL
+);
 
+CREATE TABLE IF NOT EXISTS collection_papers (
+    collection_id TEXT NOT NULL,
+    paper_id      TEXT NOT NULL,
+    added_at      DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (collection_id, paper_id),
+    FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE CASCADE,
+    FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+);
 
-def _init_schema(conn: sqlite3.Connection):
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS papers (
-            paper_id    TEXT PRIMARY KEY,
-            filename    TEXT NOT NULL,
-            metadata    TEXT,
-            executive_summary TEXT,
-            detailed_summary  TEXT,
-            key_findings      TEXT,
-            key_elements      TEXT,
-            attribution_report TEXT,
-            created_at  REAL NOT NULL,
-            last_viewed REAL,
-            source_file TEXT,
-            reading_progress TEXT DEFAULT '{}',
-            status      TEXT DEFAULT 'to_read'
-        );
+CREATE TABLE IF NOT EXISTS notes (
+    note_id    TEXT PRIMARY KEY,
+    paper_id   TEXT NOT NULL,
+    text       TEXT NOT NULL,
+    page_ref   INTEGER,
+    created_at DOUBLE PRECISION NOT NULL,
+    FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+);
 
-        CREATE TABLE IF NOT EXISTS collections (
-            collection_id TEXT PRIMARY KEY,
-            name          TEXT NOT NULL,
-            description   TEXT DEFAULT '',
-            category      TEXT DEFAULT '',
-            color         TEXT DEFAULT '#3525cd',
-            created_at    REAL NOT NULL
-        );
+CREATE TABLE IF NOT EXISTS note_versions (
+    version_id  TEXT PRIMARY KEY,
+    note_id     TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    created_at  DOUBLE PRECISION NOT NULL,
+    FOREIGN KEY (note_id) REFERENCES notes(note_id) ON DELETE CASCADE
+);
 
-        CREATE TABLE IF NOT EXISTS collection_papers (
-            collection_id TEXT NOT NULL,
-            paper_id      TEXT NOT NULL,
-            added_at      REAL NOT NULL,
-            PRIMARY KEY (collection_id, paper_id),
-            FOREIGN KEY (collection_id) REFERENCES collections(collection_id) ON DELETE CASCADE,
-            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
-        );
+CREATE TABLE IF NOT EXISTS qa_history (
+    qa_id       TEXT PRIMARY KEY,
+    paper_id    TEXT NOT NULL,
+    question    TEXT NOT NULL,
+    answer      TEXT NOT NULL,
+    sources     JSONB,
+    follow_ups  JSONB,
+    created_at  DOUBLE PRECISION NOT NULL,
+    FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
+);
 
-        CREATE TABLE IF NOT EXISTS notes (
-            note_id    TEXT PRIMARY KEY,
-            paper_id   TEXT NOT NULL,
-            text       TEXT NOT NULL,
-            page_ref   INTEGER,
-            created_at REAL NOT NULL,
-            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
-        );
+CREATE TABLE IF NOT EXISTS activity_log (
+    activity_id TEXT PRIMARY KEY,
+    action      TEXT NOT NULL,
+    detail      TEXT DEFAULT '',
+    paper_id    TEXT,
+    created_at  DOUBLE PRECISION NOT NULL
+);
 
-        CREATE TABLE IF NOT EXISTS qa_history (
-            qa_id       TEXT PRIMARY KEY,
-            paper_id    TEXT NOT NULL,
-            question    TEXT NOT NULL,
-            answer      TEXT NOT NULL,
-            sources     TEXT,
-            follow_ups  TEXT,
-            created_at  REAL NOT NULL,
-            FOREIGN KEY (paper_id) REFERENCES papers(paper_id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS note_versions (
-            version_id  TEXT PRIMARY KEY,
-            note_id     TEXT NOT NULL,
-            text        TEXT NOT NULL,
-            created_at  REAL NOT NULL,
-            FOREIGN KEY (note_id) REFERENCES notes(note_id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS activity_log (
-            activity_id TEXT PRIMARY KEY,
-            action      TEXT NOT NULL,
-            detail      TEXT DEFAULT '',
-            paper_id    TEXT,
-            created_at  REAL NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS notifications (
-            notification_id TEXT PRIMARY KEY,
-            type          TEXT NOT NULL,
-            title         TEXT NOT NULL,
-            message       TEXT NOT NULL,
-            paper_id      TEXT,
-            read          INTEGER DEFAULT 0,
-            created_at    REAL NOT NULL
-        );
-    """)
-    _migrate_add_column(conn, "papers", "last_viewed", "REAL")
-    _migrate_add_column(conn, "papers", "source_file", "TEXT")
-    _migrate_add_column(conn, "papers", "reading_progress", "TEXT DEFAULT '{}'")
-    _migrate_add_column(conn, "papers", "status", "TEXT DEFAULT 'to_read'")
-    _migrate_add_column(conn, "qa_history", "follow_ups", "TEXT")
-    _migrate_add_column(conn, "collections", "category", "TEXT DEFAULT ''")
-    _migrate_add_column(conn, "collections", "color", "TEXT DEFAULT '#3525cd'")
+CREATE TABLE IF NOT EXISTS notifications (
+    notification_id TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    paper_id        TEXT,
+    read            INTEGER DEFAULT 0,
+    created_at      DOUBLE PRECISION NOT NULL
+);
+"""
 
 
-def save_paper(paper: dict):
-    conn = _conn()
-    pid = paper.get("id") or paper.get("paper_id")
-    conn.execute(
-        """INSERT OR REPLACE INTO papers
-           (paper_id, filename, metadata, executive_summary, detailed_summary,
-            key_findings, key_elements, attribution_report, created_at, source_file, reading_progress, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            pid,
-            paper["filename"],
-            json.dumps(paper.get("metadata")) if paper.get("metadata") is not None else None,
-            paper.get("executive_summary"),
-            paper.get("detailed_summary"),
-            paper.get("key_findings"),
-            json.dumps(paper.get("key_elements")) if paper.get("key_elements") is not None else None,
-            json.dumps(paper.get("attribution_report")) if paper.get("attribution_report") is not None else None,
-            paper["created_at"],
-            paper.get("source_file"),
-            json.dumps(paper.get("reading_progress", {})),
-            paper.get("status", "to_read"),
-        ),
-    )
-    conn.commit()
+async def get_pool() -> asyncpg.Pool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(SCHEMA)
+    return pool
 
 
-def get_paper(paper_id: str) -> dict | None:
-    conn = _conn()
-    row = conn.execute("SELECT * FROM papers WHERE paper_id = ?", (paper_id,)).fetchone()
+async def _fetchrow(sql: str, *args):
+    pool = await get_pool()
+    return await pool.fetchrow(sql, *args)
+
+
+async def _fetch(sql: str, *args):
+    pool = await get_pool()
+    return await pool.fetch(sql, *args)
+
+
+async def _execute(sql: str, *args):
+    pool = await get_pool()
+    return await pool.execute(sql, *args)
+
+
+def _row_to_dict(row) -> dict:
     if row is None:
         return None
-    return _row_to_dict(row)
-
-
-def list_papers() -> list[dict]:
-    conn = _conn()
-    rows = conn.execute("SELECT * FROM papers ORDER BY created_at DESC").fetchall()
-    return [_row_to_dict(r) for r in rows]
-
-
-def delete_paper(paper_id: str) -> bool:
-    conn = _conn()
-    cur = conn.execute("DELETE FROM papers WHERE paper_id = ?", (paper_id,))
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def purge_expired(max_age_days: int = 30) -> list[str]:
-    import time
-    conn = _conn()
-    cutoff = time.time() - (max_age_days * 86400)
-    rows = conn.execute(
-        "SELECT paper_id FROM papers WHERE created_at < ?", (cutoff,)
-    ).fetchall()
-    ids = [r["paper_id"] for r in rows]
-    if ids:
-        conn.execute(
-            f"DELETE FROM papers WHERE paper_id IN ({','.join('?' * len(ids))})", ids
-        )
-        conn.commit()
-    return ids
-
-
-def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     if "paper_id" in d:
         d["id"] = d.pop("paper_id")
     for key in ("metadata", "key_elements", "attribution_report"):
         if d.get(key) is not None:
-            d[key] = json.loads(d[key])
+            if isinstance(d[key], str):
+                d[key] = json.loads(d[key])
     if d.get("reading_progress") is not None:
-        try:
-            d["reading_progress"] = json.loads(d["reading_progress"])
-        except (json.JSONDecodeError, TypeError):
+        if isinstance(d["reading_progress"], str):
+            try:
+                d["reading_progress"] = json.loads(d["reading_progress"])
+            except (json.JSONDecodeError, TypeError):
+                d["reading_progress"] = {}
+        elif not isinstance(d["reading_progress"], dict):
             d["reading_progress"] = {}
     return d
 
 
-def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str):
-    try:
-        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        if column not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-            conn.commit()
-    except Exception:
-        pass
+# ---------------------------------------------------------------------------
+# Papers
+# ---------------------------------------------------------------------------
+
+async def save_paper(paper: dict):
+    pid = paper.get("id") or paper.get("paper_id")
+    meta = paper.get("metadata")
+    meta_json = json.dumps(meta) if meta is not None else None
+    key_elements = paper.get("key_elements")
+    ke_json = json.dumps(key_elements) if key_elements is not None else None
+    attr = paper.get("attribution_report")
+    attr_json = json.dumps(attr) if attr is not None else None
+    progress = paper.get("reading_progress", {})
+    progress_json = json.dumps(progress)
+    await _execute(
+        """INSERT INTO papers
+           (paper_id, filename, metadata, executive_summary, detailed_summary,
+            key_findings, key_elements, attribution_report, created_at,
+            source_file, reading_progress, status)
+           VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11::jsonb,$12)
+           ON CONFLICT (paper_id) DO UPDATE SET
+             filename=EXCLUDED.filename, metadata=EXCLUDED.metadata,
+             executive_summary=EXCLUDED.executive_summary,
+             detailed_summary=EXCLUDED.detailed_summary,
+             key_findings=EXCLUDED.key_findings,
+             key_elements=EXCLUDED.key_elements,
+             attribution_report=EXCLUDED.attribution_report,
+             source_file=EXCLUDED.source_file,
+             reading_progress=EXCLUDED.reading_progress,
+             status=EXCLUDED.status""",
+        pid,
+        paper["filename"],
+        meta_json,
+        paper.get("executive_summary"),
+        paper.get("detailed_summary"),
+        paper.get("key_findings"),
+        ke_json,
+        attr_json,
+        paper["created_at"],
+        paper.get("source_file"),
+        progress_json,
+        paper.get("status", "to_read"),
+    )
+
+
+async def get_paper(paper_id: str) -> dict | None:
+    row = await _fetchrow("SELECT * FROM papers WHERE paper_id = $1", paper_id)
+    return _row_to_dict(row)
+
+
+async def list_papers() -> list[dict]:
+    rows = await _fetch("SELECT * FROM papers ORDER BY created_at DESC")
+    return [_row_to_dict(r) for r in rows]
+
+
+async def delete_paper(paper_id: str) -> bool:
+    tag = await _execute("DELETE FROM papers WHERE paper_id = $1", paper_id)
+    return "DELETE 0" not in tag
+
+
+async def purge_expired(max_age_days: int = 30) -> list[str]:
+    cutoff = time.time() - (max_age_days * 86400)
+    rows = await _fetch("SELECT paper_id FROM papers WHERE created_at < $1", cutoff)
+    ids = [r["paper_id"] for r in rows]
+    if ids:
+        await _execute("DELETE FROM papers WHERE paper_id = ANY($1)", ids)
+    return ids
 
 
 # ---------------------------------------------------------------------------
 # Last-viewed tracking
 # ---------------------------------------------------------------------------
 
-def touch_paper(paper_id: str):
-    import time
-    conn = _conn()
-    conn.execute("UPDATE papers SET last_viewed = ? WHERE paper_id = ?", (time.time(), paper_id))
-    conn.commit()
+async def touch_paper(paper_id: str):
+    await _execute("UPDATE papers SET last_viewed = $1 WHERE paper_id = $2", time.time(), paper_id)
 
 
-def list_papers_recent(limit: int = 50) -> list[dict]:
-    conn = _conn()
-    rows = conn.execute(
-        "SELECT * FROM papers WHERE last_viewed IS NOT NULL ORDER BY last_viewed DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
+async def list_papers_recent(limit: int = 50) -> list[dict]:
+    rows = await _fetch(
+        "SELECT * FROM papers WHERE last_viewed IS NOT NULL ORDER BY last_viewed DESC LIMIT $1",
+        limit,
+    )
     return [_row_to_dict(r) for r in rows]
 
 
-def get_reading_reminders(days_threshold: int = 30) -> list[dict]:
-    import time as _time
-    conn = _conn()
-    cutoff = _time.time() - (days_threshold * 86400)
-    rows = conn.execute(
-        """SELECT * FROM papers 
-           WHERE status = 'to_read' AND (last_viewed IS NULL OR last_viewed < ?)
+async def get_reading_reminders(days_threshold: int = 30) -> list[dict]:
+    cutoff = time.time() - (days_threshold * 86400)
+    rows = await _fetch(
+        """SELECT * FROM papers
+           WHERE status = 'to_read' AND (last_viewed IS NULL OR last_viewed < $1)
            ORDER BY created_at ASC""",
-        (cutoff,),
-    ).fetchall()
+        cutoff,
+    )
     return [_row_to_dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
-# Tags (stored in metadata JSON as "tags" list)
+# Tags
 # ---------------------------------------------------------------------------
 
-def update_paper_tags(paper_id: str, tags: list[str]):
-    import json as _json
-    conn = _conn()
-    row = conn.execute("SELECT metadata FROM papers WHERE paper_id = ?", (paper_id,)).fetchone()
+async def update_paper_tags(paper_id: str, tags: list[str]):
+    row = await _fetchrow("SELECT metadata FROM papers WHERE paper_id = $1", paper_id)
     if row is None:
         return
-    meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+    meta = json.loads(row["metadata"]) if row["metadata"] else {}
     meta["tags"] = tags
-    conn.execute("UPDATE papers SET metadata = ? WHERE paper_id = ?", (_json.dumps(meta), paper_id))
-    conn.commit()
+    await _execute("UPDATE papers SET metadata = $1::jsonb WHERE paper_id = $2", json.dumps(meta), paper_id)
 
 
-def search_papers(query: str) -> list[dict]:
-    conn = _conn()
+async def search_papers(query: str) -> list[dict]:
     q = f"%{query}%"
-    rows = conn.execute(
+    rows = await _fetch(
         """SELECT * FROM papers
-           WHERE filename LIKE ? OR executive_summary LIKE ? OR detailed_summary LIKE ?
-              OR metadata LIKE ?
+           WHERE filename ILIKE $1 OR executive_summary ILIKE $1
+              OR detailed_summary ILIKE $1 OR metadata::text ILIKE $1
            ORDER BY created_at DESC""",
-        (q, q, q, q),
-    ).fetchall()
+        q,
+    )
     return [_row_to_dict(r) for r in rows]
 
 
@@ -262,368 +257,310 @@ def search_papers(query: str) -> list[dict]:
 # Collections
 # ---------------------------------------------------------------------------
 
-import uuid as _uuid
-
-def create_collection(name: str, description: str = "", category: str = "") -> dict:
-    conn = _conn()
-    cid = _uuid.uuid4().hex[:12]
-    import time as _time
-    conn.execute(
-        "INSERT INTO collections (collection_id, name, description, category, created_at) VALUES (?, ?, ?, ?, ?)",
-        (cid, name, description, category, _time.time()),
+async def create_collection(name: str, description: str = "", category: str = "") -> dict:
+    cid = uuid.uuid4().hex[:12]
+    await _execute(
+        "INSERT INTO collections (collection_id, name, description, category, created_at) VALUES ($1,$2,$3,$4,$5)",
+        cid, name, description, category, time.time(),
     )
-    conn.commit()
     return {"id": cid, "name": name, "description": description, "category": category}
 
 
-def list_collections() -> list[dict]:
-    conn = _conn()
-    rows = conn.execute("SELECT * FROM collections ORDER BY created_at DESC").fetchall()
+async def list_collections() -> list[dict]:
+    rows = await _fetch("SELECT * FROM collections ORDER BY created_at DESC")
     result = []
     for r in rows:
         d = dict(r)
         d["id"] = d.pop("collection_id")
         d.setdefault("category", "")
-        count_row = conn.execute(
-            "SELECT COUNT(*) as cnt FROM collection_papers WHERE collection_id = ?",
-            (d["id"],),
-        ).fetchone()
-        d["paper_count"] = count_row["cnt"] if count_row else 0
+        cnt = await _fetchrow(
+            "SELECT COUNT(*) as cnt FROM collection_papers WHERE collection_id = $1", d["id"]
+        )
+        d["paper_count"] = cnt["cnt"] if cnt else 0
         result.append(d)
     return result
 
 
-def get_collection(collection_id: str) -> dict | None:
-    conn = _conn()
-    row = conn.execute(
-        "SELECT * FROM collections WHERE collection_id = ?", (collection_id,)
-    ).fetchone()
+async def get_collection(collection_id: str) -> dict | None:
+    row = await _fetchrow("SELECT * FROM collections WHERE collection_id = $1", collection_id)
     if row is None:
         return None
     d = dict(row)
     d["id"] = d.pop("collection_id")
     d.setdefault("category", "")
-    paper_rows = conn.execute(
+    paper_rows = await _fetch(
         """SELECT p.* FROM papers p
            JOIN collection_papers cp ON p.paper_id = cp.paper_id
-           WHERE cp.collection_id = ?
+           WHERE cp.collection_id = $1
            ORDER BY cp.added_at DESC""",
-        (collection_id,),
-    ).fetchall()
+        collection_id,
+    )
     d["papers"] = [_row_to_dict(r) for r in paper_rows]
     return d
 
 
-def rename_collection(collection_id: str, name: str) -> bool:
-    conn = _conn()
-    cur = conn.execute(
-        "UPDATE collections SET name = ? WHERE collection_id = ?", (name, collection_id)
-    )
-    conn.commit()
-    return cur.rowcount > 0
+async def rename_collection(collection_id: str, name: str) -> bool:
+    tag = await _execute("UPDATE collections SET name = $1 WHERE collection_id = $2", name, collection_id)
+    return "UPDATE 0" not in tag
 
 
-def delete_collection(collection_id: str) -> bool:
-    conn = _conn()
-    conn.execute("DELETE FROM collection_papers WHERE collection_id = ?", (collection_id,))
-    cur = conn.execute("DELETE FROM collections WHERE collection_id = ?", (collection_id,))
-    conn.commit()
-    return cur.rowcount > 0
+async def delete_collection(collection_id: str) -> bool:
+    await _execute("DELETE FROM collection_papers WHERE collection_id = $1", collection_id)
+    tag = await _execute("DELETE FROM collections WHERE collection_id = $1", collection_id)
+    return "DELETE 0" not in tag
 
 
-def add_paper_to_collection(collection_id: str, paper_id: str) -> bool:
-    import time as _time
-    conn = _conn()
+async def add_paper_to_collection(collection_id: str, paper_id: str) -> bool:
     try:
-        conn.execute(
-            "INSERT OR IGNORE INTO collection_papers (collection_id, paper_id, added_at) VALUES (?, ?, ?)",
-            (collection_id, paper_id, _time.time()),
+        await _execute(
+            "INSERT INTO collection_papers (collection_id, paper_id, added_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+            collection_id, paper_id, time.time(),
         )
-        conn.commit()
         return True
     except Exception:
         return False
 
 
-def remove_paper_from_collection(collection_id: str, paper_id: str) -> bool:
-    conn = _conn()
-    cur = conn.execute(
-        "DELETE FROM collection_papers WHERE collection_id = ? AND paper_id = ?",
-        (collection_id, paper_id),
+async def remove_paper_from_collection(collection_id: str, paper_id: str) -> bool:
+    tag = await _execute(
+        "DELETE FROM collection_papers WHERE collection_id = $1 AND paper_id = $2",
+        collection_id, paper_id,
     )
-    conn.commit()
-    return cur.rowcount > 0
+    return "DELETE 0" not in tag
 
 
 # ---------------------------------------------------------------------------
 # Notes
 # ---------------------------------------------------------------------------
 
-def add_note(paper_id: str, text: str, page_ref: int | None = None) -> dict:
-    import time as _time
-    conn = _conn()
-    nid = _uuid.uuid4().hex[:12]
-    conn.execute(
-        "INSERT INTO notes (note_id, paper_id, text, page_ref, created_at) VALUES (?, ?, ?, ?, ?)",
-        (nid, paper_id, text, page_ref, _time.time()),
+async def add_note(paper_id: str, text: str, page_ref: int | None = None) -> dict:
+    nid = uuid.uuid4().hex[:12]
+    await _execute(
+        "INSERT INTO notes (note_id, paper_id, text, page_ref, created_at) VALUES ($1,$2,$3,$4,$5)",
+        nid, paper_id, text, page_ref, time.time(),
     )
-    conn.commit()
     return {"id": nid, "paper_id": paper_id, "text": text, "page_ref": page_ref}
 
 
-def list_notes(paper_id: str) -> list[dict]:
-    conn = _conn()
-    rows = conn.execute(
-        "SELECT * FROM notes WHERE paper_id = ? ORDER BY created_at ASC", (paper_id,)
-    ).fetchall()
+async def list_notes(paper_id: str) -> list[dict]:
+    rows = await _fetch("SELECT * FROM notes WHERE paper_id = $1 ORDER BY created_at ASC", paper_id)
     return [{"id": r["note_id"], "paper_id": r["paper_id"], "text": r["text"],
              "page_ref": r["page_ref"], "created_at": r["created_at"]} for r in rows]
 
 
-def delete_note(note_id: str) -> bool:
-    conn = _conn()
-    cur = conn.execute("DELETE FROM notes WHERE note_id = ?", (note_id,))
-    conn.commit()
-    return cur.rowcount > 0
+async def delete_note(note_id: str) -> bool:
+    tag = await _execute("DELETE FROM notes WHERE note_id = $1", note_id)
+    return "DELETE 0" not in tag
 
 
-def update_note(note_id: str, text: str) -> bool:
-    import time as _time
-    conn = _conn()
-    row = conn.execute("SELECT text FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+async def update_note(note_id: str, text: str) -> bool:
+    row = await _fetchrow("SELECT text FROM notes WHERE note_id = $1", note_id)
     if row is None:
         return False
-    vid = _uuid.uuid4().hex[:12]
-    conn.execute(
-        "INSERT INTO note_versions (version_id, note_id, text, created_at) VALUES (?, ?, ?, ?)",
-        (vid, note_id, row["text"], _time.time()),
+    vid = uuid.uuid4().hex[:12]
+    await _execute(
+        "INSERT INTO note_versions (version_id, note_id, text, created_at) VALUES ($1,$2,$3,$4)",
+        vid, note_id, row["text"], time.time(),
     )
-    cur = conn.execute("UPDATE notes SET text = ? WHERE note_id = ?", (text, note_id))
-    conn.commit()
-    return cur.rowcount > 0
+    tag = await _execute("UPDATE notes SET text = $1 WHERE note_id = $2", text, note_id)
+    return "UPDATE 0" not in tag
 
 
-def get_note_versions(note_id: str) -> list[dict]:
-    conn = _conn()
-    rows = conn.execute(
-        "SELECT * FROM note_versions WHERE note_id = ? ORDER BY created_at DESC", (note_id,)
-    ).fetchall()
+async def get_note_versions(note_id: str) -> list[dict]:
+    rows = await _fetch("SELECT * FROM note_versions WHERE note_id = $1 ORDER BY created_at DESC", note_id)
     return [{"id": r["version_id"], "note_id": r["note_id"], "text": r["text"],
              "created_at": r["created_at"]} for r in rows]
 
 
-def revert_note(note_id: str, version_id: str) -> bool:
-    import time as _time
-    conn = _conn()
-    vrow = conn.execute("SELECT text FROM note_versions WHERE version_id = ? AND note_id = ?",
-                        (version_id, note_id)).fetchone()
+async def revert_note(note_id: str, version_id: str) -> bool:
+    vrow = await _fetchrow(
+        "SELECT text FROM note_versions WHERE version_id = $1 AND note_id = $2",
+        version_id, note_id,
+    )
     if vrow is None:
         return False
-    nrow = conn.execute("SELECT text FROM notes WHERE note_id = ?", (note_id,)).fetchone()
+    nrow = await _fetchrow("SELECT text FROM notes WHERE note_id = $1", note_id)
     if nrow is None:
         return False
-    vid = _uuid.uuid4().hex[:12]
-    conn.execute(
-        "INSERT INTO note_versions (version_id, note_id, text, created_at) VALUES (?, ?, ?, ?)",
-        (vid, note_id, nrow["text"], _time.time()),
+    vid = uuid.uuid4().hex[:12]
+    await _execute(
+        "INSERT INTO note_versions (version_id, note_id, text, created_at) VALUES ($1,$2,$3,$4)",
+        vid, note_id, nrow["text"], time.time(),
     )
-    cur = conn.execute("UPDATE notes SET text = ? WHERE note_id = ?", (vrow["text"], note_id))
-    conn.commit()
-    return cur.rowcount > 0
+    tag = await _execute("UPDATE notes SET text = $1 WHERE note_id = $2", vrow["text"], note_id)
+    return "UPDATE 0" not in tag
 
 
 # ---------------------------------------------------------------------------
 # Q&A History
 # ---------------------------------------------------------------------------
 
-def save_qa(paper_id: str, question: str, answer: str, sources: list[int] | None = None, follow_ups: list[str] | None = None):
-    import time as _time
-    import json as _json
-    conn = _conn()
-    qid = _uuid.uuid4().hex[:12]
-    conn.execute(
-        "INSERT INTO qa_history (qa_id, paper_id, question, answer, sources, follow_ups, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (qid, paper_id, question, answer, _json.dumps(sources or []), _json.dumps(follow_ups or []), _time.time()),
+async def save_qa(paper_id: str, question: str, answer: str, sources: list[int] | None = None, follow_ups: list[str] | None = None):
+    qid = uuid.uuid4().hex[:12]
+    await _execute(
+        """INSERT INTO qa_history (qa_id, paper_id, question, answer, sources, follow_ups, created_at)
+           VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7)""",
+        qid, paper_id, question, answer,
+        json.dumps(sources or []), json.dumps(follow_ups or []), time.time(),
     )
-    conn.commit()
 
 
-def list_qa_history(paper_id: str) -> list[dict]:
-    import json as _json
-    conn = _conn()
-    rows = conn.execute(
-        "SELECT * FROM qa_history WHERE paper_id = ? ORDER BY created_at ASC", (paper_id,)
-    ).fetchall()
+async def list_qa_history(paper_id: str) -> list[dict]:
+    rows = await _fetch("SELECT * FROM qa_history WHERE paper_id = $1 ORDER BY created_at ASC", paper_id)
     return [{"id": r["qa_id"], "paper_id": r["paper_id"], "question": r["question"],
-             "answer": r["answer"], "sources": _json.loads(r["sources"]) if r["sources"] else [],
+             "answer": r["answer"],
+             "sources": json.loads(r["sources"]) if isinstance(r["sources"], str) else (r["sources"] or []),
              "created_at": r["created_at"]} for r in rows]
 
 
-def search_notes(query: str) -> list[dict]:
-    conn = _conn()
+# ---------------------------------------------------------------------------
+# Search (notes & QA)
+# ---------------------------------------------------------------------------
+
+async def search_notes(query: str) -> list[dict]:
     q = f"%{query}%"
-    rows = conn.execute(
+    rows = await _fetch(
         """SELECT n.*, p.filename FROM notes n
            JOIN papers p ON n.paper_id = p.paper_id
-           WHERE n.text LIKE ?
+           WHERE n.text ILIKE $1
            ORDER BY n.created_at DESC LIMIT 20""",
-        (q,),
-    ).fetchall()
+        q,
+    )
     return [{"id": r["note_id"], "paper_id": r["paper_id"], "text": r["text"],
              "page_ref": r["page_ref"], "paper_name": r["filename"],
              "created_at": r["created_at"]} for r in rows]
 
 
-def search_qa(query: str) -> list[dict]:
-    import json as _json
-    conn = _conn()
+async def search_qa(query: str) -> list[dict]:
     q = f"%{query}%"
-    rows = conn.execute(
+    rows = await _fetch(
         """SELECT q.*, p.filename FROM qa_history q
            JOIN papers p ON q.paper_id = p.paper_id
-           WHERE q.question LIKE ? OR q.answer LIKE ?
+           WHERE q.question ILIKE $1 OR q.answer ILIKE $1
            ORDER BY q.created_at DESC LIMIT 20""",
-        (q, q),
-    ).fetchall()
+        q,
+    )
     return [{"id": r["qa_id"], "paper_id": r["paper_id"], "question": r["question"],
              "answer": r["answer"], "paper_name": r["filename"],
              "created_at": r["created_at"]} for r in rows]
 
 
-def clear_all_data():
-    conn = _conn()
-    conn.executescript("""
-        DELETE FROM collection_papers;
-        DELETE FROM collections;
-        DELETE FROM notes;
-        DELETE FROM qa_history;
-        DELETE FROM papers;
-    """)
-    conn.commit()
-
-
 # ---------------------------------------------------------------------------
-# Reading Progress
+# Clear / Bulk
 # ---------------------------------------------------------------------------
 
-def update_reading_progress(paper_id: str, section: str):
-    import json as _json
-    conn = _conn()
-    row = conn.execute("SELECT reading_progress FROM papers WHERE paper_id = ?", (paper_id,)).fetchone()
+async def clear_all_data():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM collection_papers")
+        await conn.execute("DELETE FROM collections")
+        await conn.execute("DELETE FROM note_versions")
+        await conn.execute("DELETE FROM notes")
+        await conn.execute("DELETE FROM qa_history")
+        await conn.execute("DELETE FROM activity_log")
+        await conn.execute("DELETE FROM notifications")
+        await conn.execute("DELETE FROM papers")
+
+
+async def update_reading_progress(paper_id: str, section: str):
+    row = await _fetchrow("SELECT reading_progress FROM papers WHERE paper_id = $1", paper_id)
     if row is None:
         return
-    progress = _json.loads(row["reading_progress"]) if row["reading_progress"] else {}
+    progress = row["reading_progress"]
+    if isinstance(progress, str):
+        progress = json.loads(progress) if progress else {}
+    elif not isinstance(progress, dict):
+        progress = {}
     progress[section] = True
-    conn.execute("UPDATE papers SET reading_progress = ? WHERE paper_id = ?", (_json.dumps(progress), paper_id))
-    conn.commit()
+    await _execute("UPDATE papers SET reading_progress = $1::jsonb WHERE paper_id = $2", json.dumps(progress), paper_id)
 
 
-# ---------------------------------------------------------------------------
-# Bulk Operations
-# ---------------------------------------------------------------------------
-
-def bulk_delete_papers(paper_ids: list[str]) -> int:
-    conn = _conn()
+async def bulk_delete_papers(paper_ids: list[str]) -> int:
     if not paper_ids:
         return 0
-    placeholders = ",".join("?" * len(paper_ids))
-    cur = conn.execute(f"DELETE FROM papers WHERE paper_id IN ({placeholders})", paper_ids)
-    conn.commit()
-    return cur.rowcount
+    tag = await _execute("DELETE FROM papers WHERE paper_id = ANY($1)", paper_ids)
+    return int(tag.split()[-1]) if tag else 0
 
 
-def bulk_export_bibtex(paper_ids: list[str]) -> list[dict]:
-    import json as _json
-    conn = _conn()
+async def bulk_export_bibtex(paper_ids: list[str]) -> list[dict]:
     if not paper_ids:
         return []
-    placeholders = ",".join("?" * len(paper_ids))
-    rows = conn.execute(
-        f"SELECT paper_id, metadata FROM papers WHERE paper_id IN ({placeholders})", paper_ids
-    ).fetchall()
+    rows = await _fetch("SELECT paper_id, metadata FROM papers WHERE paper_id = ANY($1)", paper_ids)
     results = []
     for r in rows:
-        meta = _json.loads(r["metadata"]) if r["metadata"] else None
+        meta = r["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta) if meta else None
         if meta:
             results.append({"id": r["paper_id"], "metadata": meta})
     return results
 
 
-def list_all_paper_ids() -> list[str]:
-    conn = _conn()
-    rows = conn.execute("SELECT paper_id FROM papers").fetchall()
+async def list_all_paper_ids() -> list[str]:
+    rows = await _fetch("SELECT paper_id FROM papers")
     return [r["paper_id"] for r in rows]
 
 
-def export_all_data() -> dict:
-    import json as _json
-    conn = _conn()
-    
-    # Get all papers
-    paper_rows = conn.execute("SELECT * FROM papers ORDER BY created_at DESC").fetchall()
-    papers = []
-    for r in paper_rows:
-        d = dict(r)
-        if "paper_id" in d:
-            d["id"] = d.pop("paper_id")
-        for key in ("metadata", "key_elements", "attribution_report"):
-            if d.get(key) is not None:
-                d[key] = _json.loads(d[key])
-        if d.get("reading_progress") is not None:
-            try:
-                d["reading_progress"] = _json.loads(d["reading_progress"])
-            except (_json.JSONDecodeError, TypeError):
-                d["reading_progress"] = {}
-        papers.append(d)
-    
-    # Get all collections
-    collection_rows = conn.execute("SELECT * FROM collections ORDER BY created_at DESC").fetchall()
-    collections = []
-    for r in collection_rows:
-        d = dict(r)
-        d["id"] = d.pop("collection_id")
-        d.setdefault("category", "")
-        papers_in_collection = conn.execute(
-            """SELECT p.* FROM papers p
-               JOIN collection_papers cp ON p.paper_id = cp.paper_id
-               WHERE cp.collection_id = ?
-               ORDER BY cp.added_at DESC""",
-            (d["id"],),
-        ).fetchall()
-        d["paper_ids"] = [pr["paper_id"] for pr in papers_in_collection]
-        collections.append(d)
-    
-    # Get all notes
-    note_rows = conn.execute("SELECT * FROM notes ORDER BY created_at ASC").fetchall()
-    notes = [{"id": r["note_id"], "paper_id": r["paper_id"], "text": r["text"],
-              "page_ref": r["page_ref"], "created_at": r["created_at"]} for r in note_rows]
-    
-    # Get all Q&A history
-    qa_rows = conn.execute("SELECT * FROM qa_history ORDER BY created_at ASC").fetchall()
-    qa_history = [{"id": r["qa_id"], "paper_id": r["paper_id"], "question": r["question"],
-                   "answer": r["answer"], "sources": _json.loads(r["sources"]) if r["sources"] else [],
-                   "follow_ups": _json.loads(r["follow_ups"]) if r["follow_ups"] else [],
-                   "created_at": r["created_at"]} for r in qa_rows]
-    
-    # Get all note versions
-    version_rows = conn.execute("SELECT * FROM note_versions ORDER BY created_at DESC").fetchall()
-    note_versions = [{"id": r["version_id"], "note_id": r["note_id"], "text": r["text"],
-                      "created_at": r["created_at"]} for r in version_rows]
-    
-    # Get all activities
-    activity_rows = conn.execute("SELECT * FROM activity_log ORDER BY created_at DESC").fetchall()
-    activities = [{"id": r["activity_id"], "action": r["action"], "detail": r["detail"],
-                   "paper_id": r["paper_id"], "created_at": r["created_at"]} for r in activity_rows]
-    
-    # Get all notifications
-    notification_rows = conn.execute("SELECT * FROM notifications ORDER BY created_at DESC").fetchall()
-    notifications = [{"id": r["notification_id"], "type": r["type"], "title": r["title"],
-                      "message": r["message"], "paper_id": r["paper_id"], "read": bool(r["read"]),
-                      "created_at": r["created_at"]} for r in notification_rows]
-    
+async def export_all_data() -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        paper_rows = await conn.fetch("SELECT * FROM papers ORDER BY created_at DESC")
+        papers = []
+        for r in paper_rows:
+            d = dict(r)
+            if "paper_id" in d:
+                d["id"] = d.pop("paper_id")
+            for key in ("metadata", "key_elements", "attribution_report"):
+                if d.get(key) is not None and isinstance(d[key], str):
+                    d[key] = json.loads(d[key])
+            if d.get("reading_progress") is not None:
+                if isinstance(d["reading_progress"], str):
+                    try:
+                        d["reading_progress"] = json.loads(d["reading_progress"])
+                    except (json.JSONDecodeError, TypeError):
+                        d["reading_progress"] = {}
+            papers.append(d)
+
+        collection_rows = await conn.fetch("SELECT * FROM collections ORDER BY created_at DESC")
+        collections = []
+        for r in collection_rows:
+            d = dict(r)
+            d["id"] = d.pop("collection_id")
+            d.setdefault("category", "")
+            pcr = await conn.fetch(
+                "SELECT p.* FROM papers p JOIN collection_papers cp ON p.paper_id = cp.paper_id WHERE cp.collection_id = $1 ORDER BY cp.added_at DESC",
+                d["id"],
+            )
+            d["paper_ids"] = [pr["paper_id"] for pr in pcr]
+            collections.append(d)
+
+        note_rows = await conn.fetch("SELECT * FROM notes ORDER BY created_at ASC")
+        notes = [{"id": r["note_id"], "paper_id": r["paper_id"], "text": r["text"],
+                  "page_ref": r["page_ref"], "created_at": r["created_at"]} for r in note_rows]
+
+        qa_rows = await conn.fetch("SELECT * FROM qa_history ORDER BY created_at ASC")
+        qa_history = [{"id": r["qa_id"], "paper_id": r["paper_id"], "question": r["question"],
+                       "answer": r["answer"],
+                       "sources": json.loads(r["sources"]) if isinstance(r["sources"], str) else (r["sources"] or []),
+                       "follow_ups": json.loads(r["follow_ups"]) if isinstance(r["follow_ups"], str) else (r["follow_ups"] or []),
+                       "created_at": r["created_at"]} for r in qa_rows]
+
+        version_rows = await conn.fetch("SELECT * FROM note_versions ORDER BY created_at DESC")
+        note_versions = [{"id": r["version_id"], "note_id": r["note_id"], "text": r["text"],
+                          "created_at": r["created_at"]} for r in version_rows]
+
+        activity_rows = await conn.fetch("SELECT * FROM activity_log ORDER BY created_at DESC")
+        activities = [{"id": r["activity_id"], "action": r["action"], "detail": r["detail"],
+                       "paper_id": r["paper_id"], "created_at": r["created_at"]} for r in activity_rows]
+
+        notification_rows = await conn.fetch("SELECT * FROM notifications ORDER BY created_at DESC")
+        notifications = [{"id": r["notification_id"], "type": r["type"], "title": r["title"],
+                          "message": r["message"], "paper_id": r["paper_id"], "read": bool(r["read"]),
+                          "created_at": r["created_at"]} for r in notification_rows]
+
     return {
         "version": "1.0",
-        "exported_at": __import__("time").time(),
+        "exported_at": time.time(),
         "papers": papers,
         "collections": collections,
         "notes": notes,
@@ -638,22 +575,16 @@ def export_all_data() -> dict:
 # Activity Log
 # ---------------------------------------------------------------------------
 
-def log_activity(action: str, detail: str = "", paper_id: str | None = None):
-    import time as _time
-    conn = _conn()
-    aid = _uuid.uuid4().hex[:12]
-    conn.execute(
-        "INSERT INTO activity_log (activity_id, action, detail, paper_id, created_at) VALUES (?, ?, ?, ?, ?)",
-        (aid, action, detail, paper_id, _time.time()),
+async def log_activity(action: str, detail: str = "", paper_id: str | None = None):
+    aid = uuid.uuid4().hex[:12]
+    await _execute(
+        "INSERT INTO activity_log (activity_id, action, detail, paper_id, created_at) VALUES ($1,$2,$3,$4,$5)",
+        aid, action, detail, paper_id, time.time(),
     )
-    conn.commit()
 
 
-def list_activities(limit: int = 50) -> list[dict]:
-    conn = _conn()
-    rows = conn.execute(
-        "SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?", (limit,)
-    ).fetchall()
+async def list_activities(limit: int = 50) -> list[dict]:
+    rows = await _fetch("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT $1", limit)
     return [{"id": r["activity_id"], "action": r["action"], "detail": r["detail"],
              "paper_id": r["paper_id"], "created_at": r["created_at"]} for r in rows]
 
@@ -662,41 +593,39 @@ def list_activities(limit: int = 50) -> list[dict]:
 # Notifications
 # ---------------------------------------------------------------------------
 
-def add_notification(type_: str, title: str, message: str, paper_id: str | None = None):
-    import time as _time
-    conn = _conn()
-    nid = _uuid.uuid4().hex[:12]
-    conn.execute(
-        "INSERT INTO notifications (notification_id, type, title, message, paper_id, read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (nid, type_, title, message, paper_id, 0, _time.time()),
+async def add_notification(type_: str, title: str, message: str, paper_id: str | None = None):
+    nid = uuid.uuid4().hex[:12]
+    now = time.time()
+    await _execute(
+        "INSERT INTO notifications (notification_id, type, title, message, paper_id, read, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        nid, type_, title, message, paper_id, 0, now,
     )
-    conn.commit()
-    return {"id": nid, "type": type_, "title": title, "message": message, "paper_id": paper_id, "read": False, "created_at": _time.time()}
+    return {"id": nid, "type": type_, "title": title, "message": message, "paper_id": paper_id, "read": False, "created_at": now}
 
 
-def list_notifications(limit: int = 50, unread_only: bool = False) -> list[dict]:
-    conn = _conn()
-    query = "SELECT * FROM notifications"
-    params = []
+async def list_notifications(limit: int = 50, unread_only: bool = False) -> list[dict]:
     if unread_only:
-        query += " WHERE read = 0"
-    query += " ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
-    rows = conn.execute(query, params).fetchall()
+        rows = await _fetch("SELECT * FROM notifications WHERE read = 0 ORDER BY created_at DESC LIMIT $1", limit)
+    else:
+        rows = await _fetch("SELECT * FROM notifications ORDER BY created_at DESC LIMIT $1", limit)
     return [{"id": r["notification_id"], "type": r["type"], "title": r["title"],
              "message": r["message"], "paper_id": r["paper_id"], "read": bool(r["read"]),
              "created_at": r["created_at"]} for r in rows]
 
 
-def mark_notification_read(notification_id: str) -> bool:
-    conn = _conn()
-    cur = conn.execute("UPDATE notifications SET read = 1 WHERE notification_id = ?", (notification_id,))
-    conn.commit()
-    return cur.rowcount > 0
+async def mark_notification_read(notification_id: str) -> bool:
+    tag = await _execute("UPDATE notifications SET read = 1 WHERE notification_id = $1", notification_id)
+    return "UPDATE 0" not in tag
 
 
-def mark_all_notifications_read() -> int:
-    conn = _conn()
-    cur = conn.execute("UPDATE notifications SET read = 1 WHERE read = 0")
-    conn.commit()
-    return cur.rowcount
+async def mark_all_notifications_read() -> int:
+    tag = await _execute("UPDATE notifications SET read = 1 WHERE read = 0")
+    return int(tag.split()[-1]) if tag else 0
+
+
+# ---------------------------------------------------------------------------
+# Metadata helper
+# ---------------------------------------------------------------------------
+
+async def update_metadata(paper_id: str, metadata: dict):
+    await _execute("UPDATE papers SET metadata = $1::jsonb WHERE paper_id = $2", json.dumps(metadata), paper_id)

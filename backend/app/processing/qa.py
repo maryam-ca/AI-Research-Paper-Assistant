@@ -42,10 +42,10 @@ Return ONLY a JSON array of flashcard objects. Example:
 ]
 """
 
-def answer_question(
+async def answer_question(
     paper_id: str, question: str, history: list[dict] | None = None, top_k: int = 5
 ) -> dict:
-    chunks = similarity_search(question, paper_id=paper_id, top_k=top_k)
+    chunks = await similarity_search(question, paper_id=paper_id, top_k=top_k)
     if not chunks:
         return {"answer": "No relevant context found for this paper.", "sources": []}
 
@@ -61,7 +61,7 @@ def answer_question(
             lines.append(f"{role}: {msg.get('text', '')}")
         history_block = "Conversation History:\n" + "\n".join(lines) + "\n\n"
 
-    answer = gemini_generate(
+    answer = await gemini_generate(
         QA_PROMPT.format(context=context, history_block=history_block, question=question)
     )
 
@@ -69,8 +69,8 @@ def answer_question(
     return {"answer": answer, "sources": pages}
 
 
-def generate_flashcards(paper_id: str, key_findings: str = "") -> list[dict]:
-    chunks = similarity_search("key findings methodology results contributions", paper_id=paper_id, top_k=20)
+async def generate_flashcards(paper_id: str, key_findings: str = "") -> list[dict]:
+    chunks = await similarity_search("key findings methodology results contributions", paper_id=paper_id, top_k=20)
     if not chunks and not key_findings:
         return []
 
@@ -86,7 +86,7 @@ def generate_flashcards(paper_id: str, key_findings: str = "") -> list[dict]:
     if not context.strip():
         return []
 
-    raw = gemini_generate(
+    raw = await gemini_generate(
         FLASHCARD_PROMPT.format(context=context),
         generation_config={"response_mime_type": "application/json"}
     )
@@ -100,10 +100,10 @@ def generate_flashcards(paper_id: str, key_findings: str = "") -> list[dict]:
     return []
 
 
-def answer_question_multi(paper_ids: list[str], question: str, history: list[dict] | None = None, top_k_per_paper: int = 3) -> dict:
+async def answer_question_multi(paper_ids: list[str], question: str, history: list[dict] | None = None, top_k_per_paper: int = 3) -> dict:
     all_chunks = []
     for pid in paper_ids:
-        chunks = similarity_search(question, paper_id=pid, top_k=top_k_per_paper)
+        chunks = await similarity_search(question, paper_id=pid, top_k=top_k_per_paper)
         for c in chunks:
             c["paper_id"] = pid
             all_chunks.append(c)
@@ -117,7 +117,7 @@ def answer_question_multi(paper_ids: list[str], question: str, history: list[dic
     context_parts = []
     for c in top_chunks:
         pid = c["paper_id"]
-        paper = paper_store.get_paper(pid)
+        paper = await paper_store.get_paper(pid)
         filename = paper.get("filename", pid) if paper else pid
         context_parts.append(f"[Paper: {filename}, page {c['page']}] {c['text']}")
 
@@ -141,14 +141,14 @@ Context from multiple papers:
 Question: {question}
 """
 
-    answer = gemini_generate(
+    answer = await gemini_generate(
         MULTI_QA_PROMPT.format(context=context, history_block=history_block, question=question)
     )
 
     sources = []
     for c in top_chunks:
         pid = c["paper_id"]
-        paper = paper_store.get_paper(pid)
+        paper = await paper_store.get_paper(pid)
         filename = paper.get("filename", pid) if paper else pid
         sources.append({"paper_id": pid, "paper_name": filename, "page": c["page"]})
 

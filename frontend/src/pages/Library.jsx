@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { listPapers, uploadPaper, fetchByIdOrDoi, fetchFromUrl, comparePapers, searchPapers, globalSearch, listCollections, addToCollection, getStats, bulkDelete, bulkAddToCollection, bulkExportBibtex, exportPaperMarkdown, getRelatedPapers, regenerateSummary, computeReadability, updatePaperStatus, suggestTags, methodologyCompare, getReadingReminders, toggleFavorite, listFavorites, bulkUpdateTags, checkDuplicate, generatePrintableCitations, suggestTagsForUpload, updatePaperTags } from "../api/client";
+import { listPapers, uploadPaper, fetchByIdOrDoi, fetchFromUrl, comparePapers, searchPapers, globalSearch, listCollections, addToCollection, getStats, bulkDelete, bulkAddToCollection, bulkExportBibtex, exportPaperMarkdown, getRelatedPapers, regenerateSummary, computeReadability, updatePaperStatus, suggestTags, methodologyCompare, getReadingReminders, toggleFavorite, listFavorites, bulkUpdateTags, checkDuplicate, generatePrintableCitations, suggestTagsForUpload, updatePaperTags, getPaperThumbnailUrl, uploadThumbnail, deleteThumbnail } from "../api/client";
 
 function UndoToast({ message, onUndo, onDismiss }) {
   return (
@@ -39,20 +39,41 @@ const THUMBNAIL_GRADIENTS = [
 ];
 const THUMBNAIL_ICONS = ["description", "science", "psychology", "biotech", "hub", "menu_book"];
 
-function PaperThumbnail({ title, source }) {
-  const hash = (title || "").split("").reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
+function PaperThumbnail({ paperId, title, source, onClick, thumbVersion = 0 }) {
+  const [thumbUrl, setThumbUrl] = useState(null);
+  const [tried, setTried] = useState(false);
+
+  useEffect(() => {
+    if (!paperId) return;
+    const url = getPaperThumbnailUrl(paperId);
+    fetch(url, { method: "HEAD" })
+      .then((r) => { if (r.ok) setThumbUrl(url + "?v=" + thumbVersion); else setThumbUrl(null); })
+      .catch(() => setThumbUrl(null))
+      .finally(() => setTried(true));
+  }, [paperId, thumbVersion]);
+
+  const hash = (paperId || "").split("").reduce((a, c) => ((a << 5) - a + c.charCodeAt(0)) | 0, 0);
   const grad = THUMBNAIL_GRADIENTS[Math.abs(hash) % THUMBNAIL_GRADIENTS.length];
   const icon = THUMBNAIL_ICONS[Math.abs(hash) % THUMBNAIL_ICONS.length];
+
+  if (thumbUrl) {
+    return (
+      <div className={`w-full h-32 rounded-xl overflow-hidden bg-surface-container ${onClick ? "cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" : ""}`} onClick={onClick ? (e) => { e.stopPropagation(); e.preventDefault(); onClick(thumbUrl); } : undefined}>
+        <img src={thumbUrl} alt={title} className="w-full h-full object-cover object-top pointer-events-none" />
+      </div>
+    );
+  }
+
   return (
-    <div className={`w-full h-24 rounded-xl bg-gradient-to-br ${grad} flex items-center justify-center`}>
-      <span className="material-symbols-outlined text-on-surface-variant/40 text-[28px]">{icon}</span>
+    <div className={`w-full h-32 rounded-xl bg-gradient-to-br ${grad} flex items-center justify-center ${onClick ? "cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" : ""}`} onClick={onClick ? (e) => { e.stopPropagation(); e.preventDefault(); onClick(null); } : undefined}>
+      <span className="material-symbols-outlined text-on-surface-variant/40 text-[28px] pointer-events-none">{icon}</span>
     </div>
   );
 }
 
 const SECTION_LABELS = { executive: "Summary", detailed: "Detail", findings: "Findings", elements: "Elements" };
 
-function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, onRegenerate, onShare, onViewRelated, onExport, onDelete, onFavorite, onStatusChange, viewMode }) {
+function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, onRegenerate, onShare, onViewRelated, onExport, onDelete, onFavorite, onStatusChange, viewMode, thumbVersion = 0, onThumbChange, onPreview }) {
   const hasSummary = paper.executive_summary || paper.detailed_summary;
   const summaryPreview = (paper.executive_summary || paper.detailed_summary || "").slice(0, 140);
   const authorCount = paper.metadata?.authors?.length || 0;
@@ -62,6 +83,7 @@ function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, 
   const [showColMenu, setShowColMenu] = useState(false);
   const [showKebab, setShowKebab] = useState(false);
   const kebabRef = useRef(null);
+  const thumbFileRef = useRef(null);
   const progress = paper.reading_progress || {};
   const sectionsRead = ["executive", "detailed", "findings", "elements"].filter((s) => progress[s]).length;
   const readability = paper.metadata?.readability;
@@ -103,10 +125,16 @@ function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, 
       onMouseEnter={(e) => { if (!selected) e.currentTarget.classList.add("card-ring"); }}
       onMouseLeave={(e) => { e.currentTarget.classList.remove("card-ring"); setShowColMenu(false); }}
     >
-      {viewMode === "grid" && <PaperThumbnail title={paper.filename} source={paper.metadata?.source} />}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <SourceBadge paper={paper} />
+      {viewMode === "grid" && <PaperThumbnail paperId={paper.id} title={paper.filename} source={paper.metadata?.source} onClick={onPreview ? (url) => onPreview(url) : undefined} thumbVersion={thumbVersion} />}
+      {viewMode === "list" && (
+        <div className="w-16 h-20 shrink-0 rounded-lg overflow-hidden bg-surface-container">
+          <PaperThumbnail paperId={paper.id} title={paper.filename} source={paper.metadata?.source} onClick={onPreview ? (url) => onPreview(url) : undefined} thumbVersion={thumbVersion} />
+        </div>
+      )}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <SourceBadge paper={paper} />
           {hasSummary && <span className="bg-tertiary/10 text-tertiary text-[10px] font-semibold px-2 py-0.5 rounded-md border border-tertiary/30">Analyzed</span>}
           {sectionsRead > 0 && <span className="bg-primary/10 text-primary text-[10px] font-semibold px-2 py-0.5 rounded-md">{sectionsRead}/4 read</span>}
           {status && <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${status === "read" ? "bg-tertiary/10 text-tertiary border-tertiary/30" : status === "reading" ? "bg-primary/10 text-primary border-primary/30" : status === "to_read" ? "bg-secondary/10 text-secondary border-secondary/30" : "bg-surface-container text-on-surface-variant border-outline-variant/30"}`}>{status === "to_read" ? "To Read" : status === "reading" ? "Reading" : status === "read" ? "Read" : "Archived"}</span>}
@@ -167,7 +195,7 @@ function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, 
                 <button onClick={() => { onExport(paper.id); setShowKebab(false); }} className="w-full text-left px-3 py-2 text-body-sm text-on-surface hover:bg-surface-container-low transition-colors flex items-center gap-2">
                   <span className="material-symbols-outlined text-[16px] text-primary">download</span>Export (Markdown)
                 </button>
-                <button onClick={() => { onAddToCollection(null, paper.id); setShowKebab(false); }} className="w-full text-left px-3 py-2 text-body-sm text-on-surface hover:bg-surface-container-low transition-colors flex items-center gap-2">
+                <button onClick={() => { setShowKebab(false); setShowColMenu(true); }} className="w-full text-left px-3 py-2 text-body-sm text-on-surface hover:bg-surface-container-low transition-colors flex items-center gap-2">
                   <span className="material-symbols-outlined text-[16px] text-primary">playlist_add</span>Add to Collection
                 </button>
                 {!readability && (
@@ -181,6 +209,19 @@ function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, 
                   </button>
                 )}
                 <hr className="my-1 border-outline-variant/30" />
+                <input ref={thumbFileRef} type="file" accept="image/*" className="hidden" onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try { await uploadThumbnail(paper.id, file); if (onThumbChange) onThumbChange(paper.id); } catch (err) { alert(err.message); }
+                  e.target.value = "";
+                }} />
+                <button onClick={() => { setShowKebab(false); thumbFileRef.current?.click(); }} className="w-full text-left px-3 py-2 text-body-sm text-on-surface hover:bg-surface-container-low transition-colors flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[16px] text-primary">photo_camera</span>Change Thumbnail
+                </button>
+                <button onClick={async () => { setShowKebab(false); try { await deleteThumbnail(paper.id); if (onThumbChange) onThumbChange(paper.id); } catch (err) { alert(err.message); } }} className="w-full text-left px-3 py-2 text-body-sm text-on-surface hover:bg-surface-container-low transition-colors flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[16px] text-primary">restart_alt</span>Reset Thumbnail
+                </button>
+                <hr className="my-1 border-outline-variant/30" />
                 <button onClick={() => { onDelete(paper.id); setShowKebab(false); }} className="w-full text-left px-3 py-2 text-body-sm text-error hover:bg-error/5 transition-colors flex items-center gap-2">
                   <span className="material-symbols-outlined text-[16px]">delete</span>Delete
                 </button>
@@ -191,6 +232,7 @@ function PaperCard({ paper, selected, onToggle, onAddToCollection, collections, 
             <input type="checkbox" checked={selected} onChange={onToggle} className="w-4 h-4 rounded border-outline-variant text-primary focus:ring-primary accent-primary" />
           </label>
         </div>
+      </div>
       </div>
     </div>
   );
@@ -387,9 +429,11 @@ export default function Library() {
   const [filterTag, setFilterTag] = useState(null);
   const [showBulkCol, setShowBulkCol] = useState(false);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem("scholarflow-view-mode") || "list");
-  const [showPinned, setShowPinned] = useState(true);
+  const [showPinned, setShowPinned] = useState(false);
   const [showUrl, setShowUrl] = useState(false);
   const [url, setUrl] = useState("");
+  const [thumbVersions, setThumbVersions] = useState({});
+  const [uploadThumbFile, setUploadThumbFile] = useState(null);
   const [globalResults, setGlobalResults] = useState(null);
   const [showSearchDropdown, setShowSearchDropdown] = useState(false);
   const [readingReminders, setReadingReminders] = useState([]);
@@ -400,6 +444,7 @@ export default function Library() {
   const [showBulkTagEditor, setShowBulkTagEditor] = useState(false);
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [showReminders, setShowReminders] = useState(false);
+  const [thumbModal, setThumbModal] = useState(null);
   const navigate = useNavigate();
 
   const load = useCallback(() => {
@@ -449,6 +494,10 @@ export default function Library() {
     try {
       const r = await uploadPaper(file);
       timers.forEach(clearTimeout);
+      if (uploadThumbFile) {
+        try { await uploadThumbnail(r.paper_id, uploadThumbFile); } catch {}
+        setUploadThumbFile(null);
+      }
       navigate(`/paper/${r.paper_id}`);
       setTimeout(async () => {
         try {
@@ -470,7 +519,12 @@ export default function Library() {
   const handleFetch = async () => {
     if (!query.trim()) return;
     setBusy(true); setBusyLabel("Fetching from arXiv / DOI...");
-    try { const isDoi = query.startsWith("10.") || query.includes("/"); const r = await fetchByIdOrDoi(isDoi ? { doi: query } : { arxivId: query }); navigate(`/paper/${r.paper_id}`); }
+    try {
+      const isDoi = query.startsWith("10.") || query.includes("/");
+      const r = await fetchByIdOrDoi(isDoi ? { doi: query } : { arxivId: query });
+      if (uploadThumbFile) { try { await uploadThumbnail(r.paper_id, uploadThumbFile); } catch {} setUploadThumbFile(null); }
+      navigate(`/paper/${r.paper_id}`);
+    }
     catch (err) { alert(err.message); }
     finally { setBusy(false); setBusyLabel(""); }
   };
@@ -478,7 +532,11 @@ export default function Library() {
   const handleFetchUrl = async () => {
     if (!url.trim()) return;
     setBusy(true); setBusyLabel("Fetching from URL...");
-    try { const r = await fetchFromUrl(url.trim()); navigate(`/paper/${r.paper_id}`); }
+    try {
+      const r = await fetchFromUrl(url.trim());
+      if (uploadThumbFile) { try { await uploadThumbnail(r.paper_id, uploadThumbFile); } catch {} setUploadThumbFile(null); }
+      navigate(`/paper/${r.paper_id}`);
+    }
     catch (err) { alert(err.message); }
     finally { setBusy(false); setBusyLabel(""); setUrl(""); setShowUrl(false); }
   };
@@ -834,6 +892,22 @@ export default function Library() {
         </div>
       </div>
 
+      <div className="flex items-center gap-3 mb-6 bg-surface-container-lowest border border-outline-variant/60 rounded-2xl px-5 py-3.5">
+        <span className="material-symbols-outlined text-[20px] text-on-surface-variant">photo_camera</span>
+        <span className="text-body-sm text-on-surface-variant">Optional thumbnail:</span>
+        <label className="relative cursor-pointer">
+          <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) setUploadThumbFile(f); }} />
+          <span className={`text-body-sm font-medium px-3 py-1.5 rounded-lg border transition-colors ${uploadThumbFile ? "bg-primary/10 border-primary/40 text-primary" : "border-outline-variant/40 text-on-surface-variant hover:border-primary/40 hover:text-primary"}`}>
+            {uploadThumbFile ? uploadThumbFile.name.slice(0, 25) : "Choose image"}
+          </span>
+        </label>
+        {uploadThumbFile && (
+          <button onClick={() => setUploadThumbFile(null)} className="text-on-surface-variant hover:text-error transition-colors" title="Remove">
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        )}
+      </div>
+
       {busy && <div className="bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-8 relative overflow-hidden mb-8"><div className="absolute inset-0 bg-surface-container-lowest/70 backdrop-blur-sm flex flex-col items-center justify-center z-10 gap-3"><Spinner size={36} color="var(--color-primary)" /><p className="text-body-md font-medium text-primary animate-pulse">{busyLabel || "Processing..."}</p></div><div className="opacity-30 space-y-3"><div className="skeleton h-5 w-3/4" /><div className="skeleton h-4 w-1/2" /></div></div>}
 
       {showCompareButtons && (<div className="flex justify-end gap-3 mb-6"><button onClick={doMethodologyCompare} disabled={comparing} className="bg-secondary text-on-secondary px-7 py-2.5 rounded-xl font-semibold flex items-center gap-2.5 transition-all duration-150 hover:shadow-lg active:scale-95 disabled:opacity-50"><span className="material-symbols-outlined text-[18px]">science</span>Compare Methodologies ({selected.size})</button><button onClick={doCompare} disabled={comparing} className="bg-primary text-on-primary px-7 py-2.5 rounded-xl font-semibold flex items-center gap-2.5 transition-all duration-150 hover:shadow-lg hover:shadow-primary/20 active:scale-95 disabled:opacity-50"><span className="material-symbols-outlined text-[18px]">auto_awesome</span>Compare ({selected.size})</button></div>)}
@@ -843,7 +917,7 @@ export default function Library() {
           : filteredPapers.length === 0 ? (
             papers.length === 0 ? <Onboarding onUpload={handleUpload} onFetchUrl={() => setShowUrl(true)} />
             : <div className="col-span-full flex flex-col items-center justify-center py-24"><div className="w-20 h-20 bg-surface-container rounded-2xl flex items-center justify-center mb-5"><span className="material-symbols-outlined text-4xl text-outline-variant">menu_book</span></div><p className="text-title-md text-on-surface mb-1">No matching papers</p><p className="text-body-md text-on-surface-variant">Try a different search or filter</p></div>
-          ) : filteredPapers.map((p) => (<PaperCard key={p.id} paper={p} selected={selected.has(p.id)} onToggle={() => toggle(p.id)} onAddToCollection={handleAddToCollection} collections={collections} onRegenerate={handleRegenerate} onShare={handleShare} onViewRelated={handleViewRelated} onExport={handleExport} onDelete={handleDelete} onFavorite={handleFavorite} onStatusChange={handleStatusChange} viewMode={viewMode} />))
+          ) : filteredPapers.map((p) => (<PaperCard key={p.id} paper={p} selected={selected.has(p.id)} onToggle={() => toggle(p.id)} onAddToCollection={handleAddToCollection} collections={collections} onRegenerate={handleRegenerate} onShare={handleShare} onViewRelated={handleViewRelated} onExport={handleExport} onDelete={handleDelete} onFavorite={handleFavorite} onStatusChange={handleStatusChange} viewMode={viewMode} thumbVersion={thumbVersions[p.id] || 0} onThumbChange={(pid) => setThumbVersions(v => ({ ...v, [pid]: (v[pid] || 0) + 1 }))} onPreview={(url) => { if (url) setThumbModal(url + "?v=" + Date.now()); }} />))
         }
       </div>
 
@@ -853,6 +927,15 @@ export default function Library() {
           onUndo={handleUndoDelete}
           onDismiss={handleUndoDelete}
         />
+      )}
+
+      {thumbModal && (
+        <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-8 cursor-pointer" onClick={() => setThumbModal(null)}>
+          <button onClick={() => setThumbModal(null)} className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center transition-colors z-10">
+            <span className="material-symbols-outlined text-white text-[24px]">close</span>
+          </button>
+          <img src={thumbModal} alt="Thumbnail" className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
+        </div>
       )}
     </div>
   );

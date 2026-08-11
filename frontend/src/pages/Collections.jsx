@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { listCollections, createCollection, deleteCollection, getCollection, removeFromCollection, exportPaperMarkdown, getRelatedPapers, regenerateSummary, bulkDelete, suggestTags, generateLitReview, exportCollectionBibtex } from "../api/client";
+import { listCollections, createCollection, deleteCollection, getCollection, removeFromCollection, exportPaperMarkdown, getRelatedPapers, regenerateSummary, bulkDelete, suggestTags, generateLitReview, exportCollectionBibtex, getPaperThumbnailUrl } from "../api/client";
 
 function Spinner({ size = 20 }) {
   return (
@@ -43,8 +43,9 @@ function CollectionCard({ col, onDelete, onClick }) {
   );
 }
 
-function PaperInCollection({ paper, onRemove, onRegenerate, onShare, onViewRelated, onExport, onDelete }) {
+function PaperInCollection({ paper, onRemove, onRegenerate, onShare, onViewRelated, onExport, onDelete, onPreview }) {
   const [showKebab, setShowKebab] = useState(false);
+  const [thumbUrl, setThumbUrl] = useState(null);
   const kebabRef = useRef(null);
 
   useEffect(() => {
@@ -57,10 +58,22 @@ function PaperInCollection({ paper, onRemove, onRegenerate, onShare, onViewRelat
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  useEffect(() => {
+    if (!paper.id) return;
+    const url = getPaperThumbnailUrl(paper.id);
+    fetch(url, { method: "HEAD" }).then((r) => { if (r.ok) setThumbUrl(url); }).catch(() => {});
+  }, [paper.id]);
+
   return (
     <div className="bg-surface-container-lowest border border-outline-variant/60 rounded-2xl p-5 flex items-center justify-between group hover:shadow-md transition-all">
       <Link to={`/paper/${paper.id}`} className="flex items-center gap-3 flex-1 min-w-0 no-underline">
-        <SourceBadge paper={paper} />
+        {thumbUrl ? (
+          <div className="w-12 h-14 shrink-0 rounded-lg overflow-hidden bg-surface-container cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (onPreview) onPreview(thumbUrl); }}>
+            <img src={thumbUrl} alt="" className="w-full h-full object-cover object-top pointer-events-none" />
+          </div>
+        ) : (
+          <SourceBadge paper={paper} />
+        )}
         <div className="min-w-0">
           <h4 className="text-body-md text-on-surface group-hover:text-primary transition-colors truncate">{paper.filename || "Untitled"}</h4>
           {paper.metadata?.authors?.length > 0 && (
@@ -119,6 +132,7 @@ export default function Collections() {
   const [newName, setNewName] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newCategory, setNewCategory] = useState("");
+  const [thumbModal, setThumbModal] = useState(null);
   const [newColor, setNewColor] = useState("#3525cd");
   const [creating, setCreating] = useState(false);
   const [filterCategory, setFilterCategory] = useState(null);
@@ -224,7 +238,7 @@ export default function Collections() {
             {selected.papers?.length > 0 ? (
               <div className="space-y-3">
                 {selected.papers.map((p) => (
-                  <PaperInCollection key={p.id} paper={p} onRemove={handleRemovePaper} onRegenerate={handleRegenerate} onShare={handleShare} onViewRelated={handleViewRelated} onExport={handleExport} onDelete={handleDeletePaper} />
+                  <PaperInCollection key={p.id} paper={p} onRemove={handleRemovePaper} onRegenerate={handleRegenerate} onShare={handleShare} onViewRelated={handleViewRelated} onExport={handleExport} onDelete={handleDeletePaper} onPreview={(url) => setThumbModal(url + "?v=" + Date.now())} />
                 ))}
               </div>
             ) : (
@@ -326,6 +340,15 @@ export default function Collections() {
           {collections.filter((c) => !filterCategory || c.category === filterCategory).map((col) => (
             <CollectionCard key={col.id} col={col} onDelete={handleDelete} onClick={() => loadDetail(col.id)} />
           ))}
+        </div>
+      )}
+
+      {thumbModal && (
+        <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-8 cursor-pointer" onClick={() => setThumbModal(null)}>
+          <button onClick={() => setThumbModal(null)} className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center transition-colors z-10">
+            <span className="material-symbols-outlined text-white text-[24px]">close</span>
+          </button>
+          <img src={thumbModal} alt="Thumbnail" className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()} />
         </div>
       )}
     </div>

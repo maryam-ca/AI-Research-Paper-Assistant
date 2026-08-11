@@ -3,9 +3,15 @@ uvicorn[standard]
 langchain
 langgraph
 google-generativeai
-chromadb
 pypdf
 python-multipart
 python-dotenv
 docx2txt
 striprtf
+pymupdf
+Pillow
+mangum
+asyncpg
+vercel-blob
+upstash-redis
+pgvector

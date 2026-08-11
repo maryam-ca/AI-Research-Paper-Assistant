@@ -1,5 +1,6 @@
+import os
 import time
-from collections import defaultdict
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -13,16 +14,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.max_papers = max_papers
         self.window = window
-        self._hits: dict[str, list[float]] = defaultdict(list)
+        self._redis = None
+
+    async def _get_redis(self):
+        if self._redis is None:
+            try:
+                from upstash_redis import AsyncRedis
+                self._redis = AsyncRedis(
+                    url=os.environ.get("UPSTASH_REDIS_REST_URL", ""),
+                    token=os.environ.get("UPSTASH_REDIS_REST_TOKEN", ""),
+                )
+            except Exception:
+                return None
+        return self._redis
 
     def _client_ip(self, request: Request) -> str:
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",")[0].strip()
         return request.client.host if request.client else "unknown"
-
-    def _cleanup(self, ip: str, now: float) -> None:
-        self._hits[ip] = [t for t in self._hits[ip] if now - t < self.window]
 
     async def dispatch(self, request: Request, call_next):
         if request.method not in ("POST",):
@@ -36,18 +46,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         ip = self._client_ip(request)
-        now = time.time()
-        self._cleanup(ip, now)
+        redis = await self._get_redis()
 
-        if len(self._hits[ip]) >= self.max_papers:
-            retry_after = int(self.window - (now - self._hits[ip][0]))
-            return JSONResponse(
-                status_code=429,
-                content={"detail": f"Rate limit exceeded. Try again in {retry_after}s."},
-                headers={"Retry-After": str(retry_after)},
-            )
+        if redis is None:
+            return await call_next(request)
+
+        key = f"rate_limit:{ip}"
+        now = time.time()
+
+        try:
+            await redis.zremrangebyscore(key, 0, now - self.window)
+            count = await redis.zcard(key)
+            if count >= self.max_papers:
+                retry_after = int(self.window)
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": f"Rate limit exceeded. Try again in {retry_after}s."},
+                    headers={"Retry-After": str(retry_after)},
+                )
+        except Exception:
+            pass
 
         response = await call_next(request)
         if response.status_code in (200, 201):
-            self._hits[ip].append(now)
+            try:
+                await redis.zadd(key, {str(now): now})
+                await redis.expire(key, self.window)
+            except Exception:
+                pass
         return response

@@ -7,7 +7,7 @@ import asyncio
 import urllib.request
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
-from fastapi.responses import PlainTextResponse, FileResponse
+from fastapi.responses import PlainTextResponse, FileResponse, Response, RedirectResponse
 from pydantic import BaseModel
 
 from ..ingestion.metadata_fetcher import fetch_arxiv_metadata, fetch_doi_metadata
@@ -16,23 +16,34 @@ from ..processing.qa import answer_question
 from ..processing.compare import compare_papers
 from ..processing.citations import generate_citation
 from ..storage import paper_store
+from ..storage.blob_storage import upload_paper as blob_upload_paper
+from ..thumbnails import (
+    extract_pdf_thumbnail,
+    render_docx_thumbnail,
+    save_custom_thumbnail,
+    delete_thumbnail,
+    get_thumbnail_url,
+)
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
 
-_graph = None
-UPLOADS_DIR = Path(__file__).resolve().parent.parent.parent / "uploads"
-UPLOADS_DIR.mkdir(exist_ok=True)
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".doc", ".rtf", ".tex", ".latex", ".html", ".htm"}
 
 
-def _get_graph():
-    global _graph
-    if _graph is None:
-        _graph = build_graph()
-    return _graph
+async def _run_pipeline_from_bytes(file_bytes: bytes, suffix: str, paper_id: str) -> dict:
+    """Run pipeline using a temporary file created from bytes."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        result = await asyncio.to_thread(_run_pipeline, tmp_path, paper_id)
+    finally:
+        os.unlink(tmp_path)
+    return result
 
 
-def _run_pipeline(file_path: str, paper_id: str) -> dict:
-    graph = _get_graph()
+async def _run_pipeline(file_path: str, paper_id: str) -> dict:
+    graph = build_graph()
     initial = {
         "file_path": file_path,
         "paper_id": paper_id,
@@ -48,78 +59,10 @@ def _run_pipeline(file_path: str, paper_id: str) -> dict:
         "stage": "",
         "error": None,
     }
-    result = graph.invoke(initial)
+    result = await graph.ainvoke(initial)
     if result["stage"].endswith(":failed"):
         raise HTTPException(status_code=422, detail=result["error"])
     return result
-
-
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
-
-class QuestionRequest(BaseModel):
-    question: str
-    history: list[dict] | None = None
-
-
-class CompareRequest(BaseModel):
-    paper_ids: list[str]
-
-
-class CollectionCreateRequest(BaseModel):
-    name: str
-    description: str = ""
-    category: str = ""
-
-
-class CollectionRenameRequest(BaseModel):
-    name: str
-
-
-class PaperIdRequest(BaseModel):
-    paper_id: str
-
-
-class PaperIdsRequest(BaseModel):
-    paper_ids: list[str]
-
-
-class TagUpdateRequest(BaseModel):
-    tags: list[str]
-
-
-class NoteCreateRequest(BaseModel):
-    text: str
-    page_ref: int | None = None
-
-
-class NoteUpdateRequest(BaseModel):
-    text: str
-
-
-class ReadingProgressRequest(BaseModel):
-    section: str
-
-
-class StatusUpdateRequest(BaseModel):
-    status: str
-
-
-class BulkAddCollectionRequest(BaseModel):
-    paper_ids: list[str]
-    collection_id: str
-
-
-class FetchUrlRequest(BaseModel):
-    url: str
-
-
-# ---------------------------------------------------------------------------
-# Paper CRUD
-# ---------------------------------------------------------------------------
-
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".doc", ".rtf", ".tex", ".latex", ".html", ".htm"}
 
 
 @router.post("/upload")
@@ -132,24 +75,13 @@ async def upload_paper(file: UploadFile = File(...)):
         )
 
     paper_id = uuid.uuid4().hex[:12]
+    content = await file.read()
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
+    # Upload to Vercel Blob
+    blob_url = await blob_upload_paper(content, file.filename or f"paper{paper_id}{suffix}", paper_id)
 
-    # Save a copy for PDF viewer
-    saved_path = UPLOADS_DIR / f"{paper_id}{suffix}"
-    try:
-        with open(saved_path, "wb") as f:
-            f.write(content)
-    except Exception:
-        saved_path = None
-
-    try:
-        result = await asyncio.to_thread(_run_pipeline, tmp_path, paper_id)
-    finally:
-        os.unlink(tmp_path)
+    # Run pipeline on temp file
+    result = await _run_pipeline_from_bytes(content, suffix, paper_id)
 
     paper = {
         "id": paper_id,
@@ -161,11 +93,31 @@ async def upload_paper(file: UploadFile = File(...)):
         "key_elements": result["key_elements"],
         "attribution_report": result["attribution_report"],
         "created_at": result["created_at"],
-        "source_file": str(saved_path) if saved_path else None,
+        "source_file": blob_url,
     }
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
-    paper_store.log_activity("upload", file.filename or "Untitled", paper_id)
+    # Auto-extract thumbnail from PDF
+    if suffix == ".pdf":
+        try:
+            thumb_url = await extract_pdf_thumbnail(content, paper_id)
+            if thumb_url:
+                paper["thumbnail_url"] = thumb_url
+                await paper_store.save_paper(paper)
+        except Exception:
+            pass
+
+    # Auto-extract thumbnail from DOCX
+    if suffix == ".docx":
+        try:
+            thumb_url = await render_docx_thumbnail(content, file.filename or f"paper{paper_id}{suffix}", paper_id)
+            if thumb_url:
+                paper["thumbnail_url"] = thumb_url
+                await paper_store.save_paper(paper)
+        except Exception:
+            pass
+
+    await paper_store.log_activity("upload", file.filename or "Untitled", paper_id)
 
     return {
         "paper_id": paper_id,
@@ -196,46 +148,35 @@ async def fetch_paper(arxiv_id: str | None = None, doi: str | None = None):
         "key_elements": None,
         "attribution_report": None,
     }
-    saved_path = None
+    blob_url = None
     if pdf_url:
-        tmp_path = None
         try:
             req = urllib.request.Request(pdf_url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=60) as resp, tempfile.NamedTemporaryFile(
-                delete=False, suffix=".pdf"
-            ) as tmp:
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 pdf_bytes = resp.read()
-                tmp.write(pdf_bytes)
-                tmp_path = tmp.name
-            # Save copy for viewer
-            saved_path = UPLOADS_DIR / f"{paper_id}.pdf"
+            # Upload to Vercel Blob
+            blob_url = await blob_upload_paper(pdf_bytes, f"{arxiv_id or doi}.pdf", paper_id)
+            # Run pipeline
+            result = await _run_pipeline_from_bytes(pdf_bytes, ".pdf", paper_id)
+            results = {
+                "executive_summary": result["executive_summary"],
+                "detailed_summary": result["detailed_summary"],
+                "key_findings": result["key_findings"],
+                "key_elements": result["key_elements"],
+                "attribution_report": result["attribution_report"],
+            }
+            metadata["published_date"] = metadata.get("published_date") or (
+                f"{time.strftime('%Y-%m', time.localtime(result['created_at']))}-01"
+            )
+            # Extract thumbnail
             try:
-                with open(saved_path, "wb") as f:
-                    f.write(pdf_bytes)
-            except Exception:
-                saved_path = None
-            try:
-                result = await asyncio.to_thread(_run_pipeline, tmp_path, paper_id)
-                results = {
-                    "executive_summary": result["executive_summary"],
-                    "detailed_summary": result["detailed_summary"],
-                    "key_findings": result["key_findings"],
-                    "key_elements": result["key_elements"],
-                    "attribution_report": result["attribution_report"],
-                }
-                metadata["published_date"] = metadata.get("published_date") or (
-                    f"{time.strftime('%Y-%m', time.localtime(result['created_at']))}-01"
-                )
+                thumb_url = await extract_pdf_thumbnail(pdf_bytes, paper_id)
+                if thumb_url:
+                    results["thumbnail_url"] = thumb_url
             except Exception:
                 pass
         except Exception:
             pass
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
 
     paper = {
         "id": paper_id,
@@ -243,11 +184,11 @@ async def fetch_paper(arxiv_id: str | None = None, doi: str | None = None):
         "metadata": metadata,
         **results,
         "created_at": time.time(),
-        "source_file": str(saved_path) if saved_path else None,
+        "source_file": blob_url,
     }
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
-    paper_store.log_activity("fetch", metadata.get("title", "Untitled"), paper_id)
+    await paper_store.log_activity("fetch", metadata.get("title", "Untitled"), paper_id)
 
     return {
         "paper_id": paper_id,
@@ -268,7 +209,6 @@ async def fetch_from_url(body: FetchUrlRequest):
     elif ".md" in url: suffix = ".md"
     elif ".docx" in url: suffix = ".docx"
 
-    tmp_path = None
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=120) as resp:
@@ -278,22 +218,15 @@ async def fetch_from_url(body: FetchUrlRequest):
             elif "html" in ct: suffix = ".html"
             elif "text" in ct: suffix = ".txt"
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        saved_path = UPLOADS_DIR / f"{paper_id}{suffix}"
-        try:
-            with open(saved_path, "wb") as f:
-                f.write(content)
-        except Exception:
-            saved_path = None
-
-        result = await asyncio.to_thread(_run_pipeline, tmp_path, paper_id)
-
+        # Upload to Vercel Blob
         filename = url.split("/")[-1].split("?")[0] or f"paper_{paper_id}"
         if not any(filename.endswith(e) for e in ALLOWED_EXTENSIONS):
             filename += suffix
+        
+        blob_url = await blob_upload_paper(content, filename, paper_id)
+
+        # Run pipeline
+        result = await _run_pipeline_from_bytes(content, suffix, paper_id)
 
         paper = {
             "id": paper_id,
@@ -305,9 +238,27 @@ async def fetch_from_url(body: FetchUrlRequest):
             "key_elements": result["key_elements"],
             "attribution_report": result["attribution_report"],
             "created_at": result["created_at"],
-            "source_file": str(saved_path) if saved_path else None,
+            "source_file": blob_url,
         }
-        paper_store.save_paper(paper)
+        await paper_store.save_paper(paper)
+
+        # Auto-extract thumbnail
+        if suffix == ".pdf":
+            try:
+                thumb_url = await extract_pdf_thumbnail(content, paper_id)
+                if thumb_url:
+                    paper["thumbnail_url"] = thumb_url
+                    await paper_store.save_paper(paper)
+            except Exception:
+                pass
+        elif suffix == ".docx":
+            try:
+                thumb_url = await render_docx_thumbnail(content, filename, paper_id)
+                if thumb_url:
+                    paper["thumbnail_url"] = thumb_url
+                    await paper_store.save_paper(paper)
+            except Exception:
+                pass
 
         return {
             "paper_id": paper_id,
@@ -318,60 +269,56 @@ async def fetch_from_url(body: FetchUrlRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Failed to fetch from URL: {e}")
-    finally:
-        if tmp_path:
-            try: os.unlink(tmp_path)
-            except OSError: pass
 
 
 @router.get("/{paper_id}/file")
 async def serve_paper_file(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     src = paper.get("source_file")
-    if not src or not os.path.exists(src):
+    if not src:
         raise HTTPException(status_code=404, detail="Source file not available")
-    return FileResponse(src, media_type="application/octet-stream",
-                         filename=paper.get("filename", "document"))
+    # Redirect to Vercel Blob URL
+    return RedirectResponse(url=src)
 
 
 @router.get("")
-def list_papers():
-    return paper_store.list_papers()
+async def list_papers():
+    return await paper_store.list_papers()
 
 
 @router.get("/search")
-def search_papers(q: str = Query("")):
+async def search_papers(q: str = Query("")):
     if not q.strip():
-        return paper_store.list_papers()
-    return paper_store.search_papers(q)
+        return await paper_store.list_papers()
+    return await paper_store.search_papers(q)
 
 
 @router.get("/global-search")
-def global_search(q: str = Query("")):
+async def global_search(q: str = Query("")):
     if not q.strip():
         return {"papers": [], "notes": [], "qa": []}
-    papers = paper_store.search_papers(q)
-    notes = paper_store.search_notes(q)
-    qa = paper_store.search_qa(q)
+    papers = await paper_store.search_papers(q)
+    notes = await paper_store.search_notes(q)
+    qa = await paper_store.search_qa(q)
     return {"papers": papers, "notes": notes, "qa": qa}
 
 
 @router.get("/activities")
-def get_activities(limit: int = Query(50)):
-    return paper_store.list_activities(limit)
+async def get_activities(limit: int = Query(50)):
+    return await paper_store.list_activities(limit)
 
 
 @router.get("/recent")
-def list_recent():
-    return paper_store.list_papers_recent()
+async def list_recent():
+    return await paper_store.list_papers_recent()
 
 
 @router.get("/stats")
-def get_stats():
-    papers = paper_store.list_papers()
-    collections = paper_store.list_collections()
+async def get_stats():
+    papers = await paper_store.list_papers()
+    collections = await paper_store.list_collections()
     all_tags = {}
     this_week = time.time() - 7 * 86400
     week_count = 0
@@ -391,23 +338,23 @@ def get_stats():
 
 
 @router.post("/compare")
-def compare(body: CompareRequest):
+async def compare(body: CompareRequest):
     if len(body.paper_ids) < 2:
         raise HTTPException(status_code=400, detail="At least two paper IDs required")
-    missing = [pid for pid in body.paper_ids if not paper_store.get_paper(pid)]
+    missing = [pid for pid in body.paper_ids if not await paper_store.get_paper(pid)]
     if missing:
         raise HTTPException(status_code=404, detail=f"Papers not found: {missing}")
-    paper_store.log_activity("compare", f"Compared {len(body.paper_ids)} papers")
-    return compare_papers(body.paper_ids)
+    await paper_store.log_activity("compare", f"Compared {len(body.paper_ids)} papers")
+    return await compare_papers(body.paper_ids)
 
 
 @router.post("/cleanup")
-def cleanup_expired():
+async def cleanup_expired():
     from ..storage.vector_store import purge_expired as purge_vectors
-    expired_ids = paper_store.purge_expired(max_age_days=30)
+    expired_ids = await paper_store.purge_expired(max_age_days=30)
     deleted_vectors = 0
     for pid in expired_ids:
-        deleted_vectors += purge_vectors(max_age_days=30)
+        deleted_vectors += await purge_vectors(max_age_days=30)
     return {"deleted_papers": len(expired_ids), "deleted_chunks": deleted_vectors}
 
 
@@ -416,22 +363,24 @@ def cleanup_expired():
 # ---------------------------------------------------------------------------
 
 @router.post("/bulk-delete")
-def bulk_delete(body: PaperIdsRequest):
-    count = paper_store.bulk_delete_papers(body.paper_ids)
-    paper_store.log_activity("bulk_delete", f"Deleted {count} papers")
+async def bulk_delete(body: PaperIdsRequest):
+    for pid in body.paper_ids:
+        await delete_thumbnail(pid)
+    count = await paper_store.bulk_delete_papers(body.paper_ids)
+    await paper_store.log_activity("bulk_delete", f"Deleted {count} papers")
     return {"deleted": count}
 
 
 @router.post("/bulk-add-collection")
-def bulk_add_to_collection(body: BulkAddCollectionRequest):
+async def bulk_add_to_collection(body: BulkAddCollectionRequest):
     for pid in body.paper_ids:
-        paper_store.add_paper_to_collection(body.collection_id, pid)
+        await paper_store.add_paper_to_collection(body.collection_id, pid)
     return {"ok": True, "added": len(body.paper_ids)}
 
 
 @router.post("/bulk-export-bibtex")
-def bulk_export_bibtex(body: PaperIdsRequest):
-    items = paper_store.bulk_export_bibtex(body.paper_ids)
+async def bulk_export_bibtex(body: PaperIdsRequest):
+    items = await paper_store.bulk_export_bibtex(body.paper_ids)
     entries = []
     for item in items:
         meta = item.get("metadata")
@@ -446,8 +395,8 @@ def bulk_export_bibtex(body: PaperIdsRequest):
 
 
 @router.get("/export-all")
-def export_all_data():
-    data = paper_store.export_all_data()
+async def export_all_data():
+    data = await paper_store.export_all_data()
     import json as _json
     content = _json.dumps(data, indent=2, default=str)
     return PlainTextResponse(content, media_type="application/json",
@@ -459,54 +408,54 @@ def export_all_data():
 # ---------------------------------------------------------------------------
 
 @router.get("/collections/all")
-def list_collections():
-    return paper_store.list_collections()
+async def list_collections():
+    return await paper_store.list_collections()
 
 
 @router.post("/collections/create")
-def create_collection(body: CollectionCreateRequest):
-    return paper_store.create_collection(body.name, body.description, body.category)
+async def create_collection(body: CollectionCreateRequest):
+    return await paper_store.create_collection(body.name, body.description, body.category)
 
 
 @router.get("/collections/{collection_id}")
-def get_collection(collection_id: str):
-    c = paper_store.get_collection(collection_id)
+async def get_collection(collection_id: str):
+    c = await paper_store.get_collection(collection_id)
     if not c:
         raise HTTPException(status_code=404, detail="Collection not found")
     return c
 
 
 @router.put("/collections/{collection_id}")
-def rename_collection(collection_id: str, body: CollectionRenameRequest):
-    if not paper_store.rename_collection(collection_id, body.name):
+async def rename_collection(collection_id: str, body: CollectionRenameRequest):
+    if not await paper_store.rename_collection(collection_id, body.name):
         raise HTTPException(status_code=404, detail="Collection not found")
     return {"ok": True}
 
 
 @router.delete("/collections/{collection_id}")
-def delete_collection(collection_id: str):
-    if not paper_store.delete_collection(collection_id):
+async def delete_collection(collection_id: str):
+    if not await paper_store.delete_collection(collection_id):
         raise HTTPException(status_code=404, detail="Collection not found")
     return {"ok": True}
 
 
 @router.post("/collections/{collection_id}/add")
-def add_to_collection(collection_id: str, body: PaperIdRequest):
-    paper_store.add_paper_to_collection(collection_id, body.paper_id)
-    c = paper_store.get_collection(collection_id)
-    paper_store.log_activity("add_to_collection", f"Added to {c['name'] if c else collection_id}", body.paper_id)
+async def add_to_collection(collection_id: str, body: PaperIdRequest):
+    await paper_store.add_paper_to_collection(collection_id, body.paper_id)
+    c = await paper_store.get_collection(collection_id)
+    await paper_store.log_activity("add_to_collection", f"Added to {c['name'] if c else collection_id}", body.paper_id)
     return {"ok": True}
 
 
 @router.post("/collections/{collection_id}/remove")
-def remove_from_collection(collection_id: str, body: PaperIdRequest):
-    paper_store.remove_paper_from_collection(collection_id, body.paper_id)
+async def remove_from_collection(collection_id: str, body: PaperIdRequest):
+    await paper_store.remove_paper_from_collection(collection_id, body.paper_id)
     return {"ok": True}
 
 
 @router.get("/collections/{collection_id}/export-bibtex")
-def export_collection_bibtex(collection_id: str):
-    c = paper_store.get_collection(collection_id)
+async def export_collection_bibtex(collection_id: str):
+    c = await paper_store.get_collection(collection_id)
     if not c:
         raise HTTPException(status_code=404, detail="Collection not found")
     entries = []
@@ -547,8 +496,8 @@ Be thorough but concise. Reference papers by their titles.
 
 
 @router.post("/literature-review")
-def generate_lit_review(body: LitReviewRequest):
-    c = paper_store.get_collection(body.collection_id)
+async def generate_lit_review(body: LitReviewRequest):
+    c = await paper_store.get_collection(body.collection_id)
     if not c:
         raise HTTPException(status_code=404, detail="Collection not found")
     papers = c.get("papers", [])
@@ -577,9 +526,9 @@ def generate_lit_review(body: LitReviewRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/{paper_id}/related")
-def get_related_papers(paper_id: str, limit: int = Query(5)):
+async def get_related_papers(paper_id: str, limit: int = Query(5)):
     from ..storage.vector_store import similarity_search
-    all_ids = paper_store.list_all_paper_ids()
+    all_ids = await paper_store.list_all_paper_ids()
     other_ids = [pid for pid in all_ids if pid != paper_id]
     if not other_ids:
         return {"related": []}
@@ -597,7 +546,7 @@ def get_related_papers(paper_id: str, limit: int = Query(5)):
     sorted_papers = sorted(scored.items(), key=lambda x: -x[1])[:limit]
     result = []
     for pid, score in sorted_papers:
-        p = paper_store.get_paper(pid)
+        p = await paper_store.get_paper(pid)
         if p:
             result.append({"id": pid, "filename": p.get("filename"), "metadata": p.get("metadata"),
                            "executive_summary": (p.get("executive_summary") or "")[:200], "score": round(score, 3)})
@@ -609,8 +558,8 @@ def get_related_papers(paper_id: str, limit: int = Query(5)):
 # ---------------------------------------------------------------------------
 
 @router.post("/{paper_id}/progress")
-def update_progress(paper_id: str, body: ReadingProgressRequest):
-    paper_store.update_reading_progress(paper_id, body.section)
+async def update_progress(paper_id: str, body: ReadingProgressRequest):
+    await paper_store.update_reading_progress(paper_id, body.section)
     return {"ok": True}
 
 
@@ -619,25 +568,25 @@ def update_progress(paper_id: str, body: ReadingProgressRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/{paper_id}/notes")
-def list_notes(paper_id: str):
-    return paper_store.list_notes(paper_id)
+async def list_notes(paper_id: str):
+    return await paper_store.list_notes(paper_id)
 
 
 @router.post("/{paper_id}/notes")
-def create_note(paper_id: str, body: NoteCreateRequest):
-    return paper_store.add_note(paper_id, body.text, body.page_ref)
+async def create_note(paper_id: str, body: NoteCreateRequest):
+    return await paper_store.add_note(paper_id, body.text, body.page_ref)
 
 
 @router.put("/notes/{note_id}")
-def edit_note(note_id: str, body: NoteUpdateRequest):
-    if not paper_store.update_note(note_id, body.text):
+async def edit_note(note_id: str, body: NoteUpdateRequest):
+    if not await paper_store.update_note(note_id, body.text):
         raise HTTPException(status_code=404, detail="Note not found")
     return {"ok": True}
 
 
 @router.delete("/notes/{note_id}")
-def remove_note(note_id: str):
-    if not paper_store.delete_note(note_id):
+async def remove_note(note_id: str):
+    if not await paper_store.delete_note(note_id):
         raise HTTPException(status_code=404, detail="Note not found")
     return {"ok": True}
 
@@ -647,13 +596,13 @@ class NoteRevertRequest(BaseModel):
 
 
 @router.get("/notes/{note_id}/versions")
-def get_note_versions(note_id: str):
-    return paper_store.get_note_versions(note_id)
+async def get_note_versions(note_id: str):
+    return await paper_store.get_note_versions(note_id)
 
 
 @router.post("/notes/{note_id}/revert")
-def revert_note_to_version(note_id: str, body: NoteRevertRequest):
-    if not paper_store.revert_note(note_id, body.version_id):
+async def revert_note_to_version(note_id: str, body: NoteRevertRequest):
+    if not await paper_store.revert_note(note_id, body.version_id):
         raise HTTPException(status_code=404, detail="Version or note not found")
     return {"ok": True}
 
@@ -663,21 +612,21 @@ def revert_note_to_version(note_id: str, body: NoteRevertRequest):
 # ---------------------------------------------------------------------------
 
 @router.put("/{paper_id}/tags")
-def update_tags(paper_id: str, body: TagUpdateRequest):
-    paper_store.update_paper_tags(paper_id, body.tags)
+async def update_tags(paper_id: str, body: TagUpdateRequest):
+    await paper_store.update_paper_tags(paper_id, body.tags)
     return {"ok": True}
 
 
 @router.put("/{paper_id}/status")
-def update_status(paper_id: str, body: StatusUpdateRequest):
+async def update_status(paper_id: str, body: StatusUpdateRequest):
     valid_statuses = ["to_read", "reading", "read", "archived"]
     if body.status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
-    paper = paper_store.get_paper(paper_id)
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     paper["status"] = body.status
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
     return {"ok": True, "status": body.status}
 
 
@@ -686,8 +635,8 @@ def update_status(paper_id: str, body: StatusUpdateRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/{paper_id}/qa-history")
-def get_qa_history(paper_id: str):
-    return paper_store.list_qa_history(paper_id)
+async def get_qa_history(paper_id: str):
+    return await paper_store.list_qa_history(paper_id)
 
 
 # ---------------------------------------------------------------------------
@@ -695,8 +644,8 @@ def get_qa_history(paper_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/{paper_id}/export-markdown")
-def export_paper_markdown(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+async def export_paper_markdown(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     md = _paper_to_markdown(paper)
@@ -705,8 +654,8 @@ def export_paper_markdown(paper_id: str):
 
 
 @router.get("/{paper_id}/citation")
-def citation(paper_id: str, style: str = Query("apa")):
-    paper = paper_store.get_paper(paper_id)
+async def citation(paper_id: str, style: str = Query("apa")):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     if not paper.get("metadata"):
@@ -728,8 +677,8 @@ class RegenerateRequest(BaseModel):
 
 
 @router.post("/{paper_id}/regenerate")
-def regenerate_summary(paper_id: str, body: RegenerateRequest):
-    paper = paper_store.get_paper(paper_id)
+async def regenerate_summary(paper_id: str, body: RegenerateRequest):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     if body.section not in ("executive", "detailed", "findings"):
@@ -747,7 +696,7 @@ def regenerate_summary(paper_id: str, body: RegenerateRequest):
         full_text = paper.get("executive_summary", "") + "\n\n" + (paper.get("detailed_summary", "") or "")
 
     try:
-        new_text = regenerate_section(full_text, body.section, body.instruction, body.length)
+        new_text = await regenerate_section(full_text, body.section, body.instruction, body.length)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Regeneration failed: {e}")
 
@@ -757,7 +706,7 @@ def regenerate_summary(paper_id: str, body: RegenerateRequest):
         "findings": "key_findings",
     }
     paper[col_map[body.section]] = new_text
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
     return {"section": body.section, "text": new_text}
 
@@ -771,13 +720,13 @@ class FlashcardRequest(BaseModel):
 
 
 @router.post("/{paper_id}/flashcards")
-def generate_flashcards_route(paper_id: str, body: FlashcardRequest):
-    paper = paper_store.get_paper(paper_id)
+async def generate_flashcards_route(paper_id: str, body: FlashcardRequest):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
 
     from ..processing.qa import generate_flashcards
-    flashcards = generate_flashcards(paper_id, paper.get("key_findings", ""))
+    flashcards = await generate_flashcards(paper_id, paper.get("key_findings", ""))
     return {"flashcards": flashcards}
 
 
@@ -791,8 +740,8 @@ class TranslateRequest(BaseModel):
 
 
 @router.post("/{paper_id}/translate")
-def translate_summary(paper_id: str, body: TranslateRequest):
-    paper = paper_store.get_paper(paper_id)
+def await translate_summary(paper_id: str, body: TranslateRequest):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
 
@@ -824,7 +773,7 @@ def translate_summary(paper_id: str, body: TranslateRequest):
         paper["metadata"]["translations"] = {}
     paper["metadata"]["translations"][body.section] = paper["metadata"]["translations"].get(body.section, {})
     paper["metadata"]["translations"][body.section][body.target_language] = translated
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
     return {"translated_summary": translated, "language": body.target_language, "section": body.section}
 
@@ -838,8 +787,8 @@ class SuggestTagsRequest(BaseModel):
 
 
 @router.post("/{paper_id}/suggest-tags")
-def suggest_tags(paper_id: str, body: SuggestTagsRequest):
-    paper = paper_store.get_paper(paper_id)
+def await suggest_tags(paper_id: str, body: SuggestTagsRequest):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
 
@@ -856,7 +805,7 @@ def suggest_tags(paper_id: str, body: SuggestTagsRequest):
         raise HTTPException(status_code=400, detail="No content available for tag suggestion")
 
     try:
-        tags = suggest_tags(full_text)
+        tags = await suggest_tags(full_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tag suggestion failed: {e}")
 
@@ -874,18 +823,18 @@ class MultiQARequest(BaseModel):
 
 
 @router.post("/multi-qa")
-def multi_paper_qa(body: MultiQARequest):
+async def multi_paper_qa(body: MultiQARequest):
     if not body.paper_ids:
         raise HTTPException(status_code=400, detail="At least one paper ID required")
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
 
-    missing = [pid for pid in body.paper_ids if not paper_store.get_paper(pid)]
+    missing = [pid for pid in body.paper_ids if not await paper_store.get_paper(pid)]
     if missing:
         raise HTTPException(status_code=404, detail=f"Papers not found: {missing}")
 
     from ..processing.qa import answer_question_multi
-    result = answer_question_multi(body.paper_ids, body.question, body.history)
+    result = await answer_question_multi(body.paper_ids, body.question, body.history)
     return result
 
 
@@ -898,16 +847,16 @@ class MethodologyCompareRequest(BaseModel):
 
 
 @router.post("/methodology-compare")
-def methodology_compare(body: MethodologyCompareRequest):
+async def methodology_compare(body: MethodologyCompareRequest):
     if len(body.paper_ids) < 2:
         raise HTTPException(status_code=400, detail="At least two paper IDs required")
 
-    missing = [pid for pid in body.paper_ids if not paper_store.get_paper(pid)]
+    missing = [pid for pid in body.paper_ids if not await paper_store.get_paper(pid)]
     if missing:
         raise HTTPException(status_code=404, detail=f"Papers not found: {missing}")
 
     from ..processing.compare import compare_methodologies
-    result = compare_methodologies(body.paper_ids)
+    result = await compare_methodologies(body.paper_ids)
     return result
 
 
@@ -920,27 +869,27 @@ class NotificationReadRequest(BaseModel):
 
 
 @router.get("/notifications")
-def get_notifications(limit: int = Query(50), unread_only: bool = Query(False)):
-    return paper_store.list_notifications(limit, unread_only)
+async def get_notifications(limit: int = Query(50), unread_only: bool = Query(False)):
+    return await paper_store.list_notifications(limit, unread_only)
 
 
 @router.post("/notifications/read")
-def mark_notification_read(body: NotificationReadRequest):
-    ok = paper_store.mark_notification_read(body.notification_id)
+async def mark_notification_read(body: NotificationReadRequest):
+    ok = await paper_store.mark_notification_read(body.notification_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"ok": True}
 
 
 @router.post("/notifications/read-all")
-def mark_all_notifications_read():
-    count = paper_store.mark_all_notifications_read()
+async def mark_all_notifications_read():
+    count = await paper_store.mark_all_notifications_read()
     return {"ok": True, "count": count}
 
 
 @router.get("/reading-reminders")
-def get_reading_reminders(days: int = Query(30)):
-    reminders = paper_store.get_reading_reminders(days)
+async def get_reading_reminders(days: int = Query(30)):
+    reminders = await paper_store.get_reading_reminders(days)
     return {"reminders": reminders, "count": len(reminders), "days_threshold": days}
 
 
@@ -949,8 +898,8 @@ def get_reading_reminders(days: int = Query(30)):
 # ---------------------------------------------------------------------------
 
 @router.post("/{paper_id}/readability")
-def compute_readability(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+async def compute_readability(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
 
@@ -968,7 +917,7 @@ def compute_readability(paper_id: str):
     if paper.get("metadata") is None:
         paper["metadata"] = {}
     paper["metadata"]["readability"] = scores
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
     return {"readability": scores}
 
@@ -982,8 +931,8 @@ class SimplifiedSummaryRequest(BaseModel):
 
 
 @router.post("/{paper_id}/simplified")
-def generate_simplified_summary(paper_id: str, body: SimplifiedSummaryRequest):
-    paper = paper_store.get_paper(paper_id)
+def await generate_simplified_summary(paper_id: str, body: SimplifiedSummaryRequest):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
 
@@ -997,14 +946,14 @@ def generate_simplified_summary(paper_id: str, body: SimplifiedSummaryRequest):
         full_text = paper.get("executive_summary", "") + "\n\n" + (paper.get("detailed_summary", "") or "") + "\n\n" + (paper.get("key_findings", "") or "")
 
     try:
-        simplified = generate_simplified_summary(full_text, body.instruction)
+        simplified = await generate_simplified_summary(full_text, body.instruction)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Simplified summary generation failed: {e}")
 
     if paper.get("metadata") is None:
         paper["metadata"] = {}
     paper["metadata"]["simplified_summary"] = simplified
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
     return {"simplified_summary": simplified}
 
@@ -1014,8 +963,8 @@ def generate_simplified_summary(paper_id: str, body: SimplifiedSummaryRequest):
 # ---------------------------------------------------------------------------
 
 @router.post("/{paper_id}/figures-tables")
-def extract_figures_tables(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+def await extract_figures_tables(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
 
@@ -1028,19 +977,19 @@ def extract_figures_tables(paper_id: str):
     else:
         full_text = paper.get("executive_summary", "") + "\n\n" + (paper.get("detailed_summary", "") or "") + "\n\n" + (paper.get("key_findings", "") or "")
 
-    result = extract_figures_tables(full_text)
+    result = await extract_figures_tables(full_text)
 
     if paper.get("metadata") is None:
         paper["metadata"] = {}
     paper["metadata"]["figures_tables"] = result
-    paper_store.save_paper(paper)
+    await paper_store.save_paper(paper)
 
     return {"figures_tables": result}
 
 
 @router.get("/{paper_id}/share-digest")
-def share_digest(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+async def share_digest(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     meta = paper.get("metadata") or {}
@@ -1058,25 +1007,77 @@ def share_digest(paper_id: str):
 # Paper detail (must be last — catches /{paper_id})
 # ---------------------------------------------------------------------------
 
-@router.get("/{paper_id}")
-def get_paper(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+@router.api_route("/{paper_id}/thumbnail", methods=["GET", "HEAD"])
+async def get_thumbnail(paper_id: str):
+    from ..thumbnails import get_thumbnail_url
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
-    paper_store.touch_paper(paper_id)
+    thumb_url = get_thumbnail_url(paper_id)
+    if not thumb_url:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
+    return RedirectResponse(url=thumb_url)
+
+
+@router.post("/{paper_id}/thumbnail")
+async def upload_thumbnail(paper_id: str, file: UploadFile = File(...)):
+    paper = await paper_store.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    suffix = os.path.splitext(file.filename or "")[1].lower()
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+        suffix = ".jpg"
+    content = await file.read()
+    thumb_url = save_custom_thumbnail(paper_id, content, suffix)
+    return {"ok": True, "thumbnail": thumb_url}
+
+
+@router.delete("/{paper_id}/thumbnail")
+async def delete_thumbnail_endpoint(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    delete_thumbnail(paper_id)
+    # Try to re-extract from source PDF if available
+    src = paper.get("source_file")
+    if src and src.lower().endswith(".pdf"):
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(src, timeout=30)
+                if resp.status_code == 200:
+                    pdf_bytes = resp.content
+                    from ..thumbnails import extract_pdf_thumbnail
+                    thumb_url = await extract_pdf_thumbnail(pdf_bytes, paper_id)
+                    if thumb_url:
+                        return {"ok": True, "thumbnail": thumb_url}
+        except Exception:
+            pass
+    thumb_url = get_thumbnail_url(paper_id)
+    if thumb_url:
+        return {"ok": True, "thumbnail": thumb_url}
+    return {"ok": True, "thumbnail": None}
+
+
+@router.get("/{paper_id}")
+async def get_paper(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    await paper_store.touch_paper(paper_id)
     return paper
 
 
 @router.post("/{paper_id}/ask")
-def ask_question_route(paper_id: str, body: QuestionRequest):
-    paper = paper_store.get_paper(paper_id)
+async def ask_question_route(paper_id: str, body: QuestionRequest):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
-    result = answer_question(paper_id, body.question, history=body.history)
+    result = await answer_question(paper_id, body.question, history=body.history)
     follow_ups = _generate_follow_ups(paper_id, body.question, result["answer"], paper, body.history)
     result["follow_ups"] = follow_ups
-    paper_store.save_qa(paper_id, body.question, result["answer"], result.get("sources"), follow_ups)
-    paper_store.log_activity("ask", body.question, paper_id)
+    await paper_store.save_qa(paper_id, body.question, result["answer"], result.get("sources"), follow_ups)
+    await paper_store.log_activity("ask", body.question, paper_id)
     return result
 
 
@@ -1108,7 +1109,7 @@ Return ONLY a JSON array of 3 strings, no other text. Example:
 # Paper detail helpers
 # ---------------------------------------------------------------------------
 
-def _paper_to_markdown(paper: dict) -> str:
+async def _paper_to_markdown(paper: dict) -> str:
     lines = []
     meta = paper.get("metadata") or {}
     lines.append(f"# {paper.get('filename', 'Untitled')}")
@@ -1135,7 +1136,7 @@ def _paper_to_markdown(paper: dict) -> str:
             else:
                 lines.append(str(v))
             lines.append("")
-    notes = paper_store.list_notes(paper["id"])
+    notes = await paper_store.list_notes(paper["id"])
     if notes:
         lines.append(f"\n## Notes\n\n")
         for n in notes:
@@ -1150,19 +1151,19 @@ def _paper_to_markdown(paper: dict) -> str:
 # ---------------------------------------------------------------------------
 
 @router.post("/{paper_id}/favorite")
-def toggle_favorite(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+async def toggle_favorite(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(404, "Paper not found")
     meta = paper.get("metadata") or {}
     meta["is_favorite"] = not meta.get("is_favorite", False)
-    paper_store.update_metadata(paper_id, meta)
+    await paper_store.update_metadata(paper_id, meta)
     return {"is_favorite": meta["is_favorite"]}
 
 
 @router.get("/favorites")
-def list_favorites():
-    papers = paper_store.list_papers()
+async def list_favorites():
+    papers = await paper_store.list_papers()
     return [p for p in papers if (p.get("metadata") or {}).get("is_favorite")]
 
 
@@ -1171,11 +1172,11 @@ def list_favorites():
 # ---------------------------------------------------------------------------
 
 @router.post("/check-duplicate")
-def check_duplicate(body: dict):
+async def check_duplicate(body: dict):
     filename = body.get("filename", "")
     if not filename:
         return {"is_duplicate": False}
-    papers = paper_store.list_papers()
+    papers = await paper_store.list_papers()
     name_lower = filename.lower().replace(".pdf", "").replace(".docx", "").strip()
     for p in papers:
         existing_name = (p.get("filename") or "").lower().replace(".pdf", "").replace(".docx", "").strip()
@@ -1198,9 +1199,9 @@ class BulkTagRequest(BaseModel):
 
 
 @router.put("/bulk-tags")
-def bulk_update_tags(body: BulkTagRequest):
+async def bulk_update_tags(body: BulkTagRequest):
     for pid in body.paper_ids:
-        paper = paper_store.get_paper(pid)
+        paper = await paper_store.get_paper(pid)
         if not paper:
             continue
         meta = paper.get("metadata") or {}
@@ -1211,7 +1212,7 @@ def bulk_update_tags(body: BulkTagRequest):
         for t in body.tags_to_remove:
             current_tags = [x for x in current_tags if x != t]
         meta["tags"] = current_tags
-        paper_store.update_metadata(pid, meta)
+        await paper_store.update_metadata(pid, meta)
     return {"updated": len(body.paper_ids)}
 
 
@@ -1220,13 +1221,13 @@ def bulk_update_tags(body: BulkTagRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/collections/{collection_id}/share")
-def get_collection_share_data(collection_id: str):
-    col = paper_store.get_collection(collection_id)
+async def get_collection_share_data(collection_id: str):
+    col = await paper_store.get_collection(collection_id)
     if not col:
         raise HTTPException(404, "Collection not found")
     papers = []
     for pid in col.get("paper_ids", []):
-        p = paper_store.get_paper(pid)
+        p = await paper_store.get_paper(pid)
         if p:
             papers.append({
                 "id": p["id"],
@@ -1256,10 +1257,10 @@ class CitationPrintRequest(BaseModel):
 
 
 @router.post("/citations-print")
-def generate_printable_citations(body: CitationPrintRequest):
+async def generate_printable_citations(body: CitationPrintRequest):
     citations = []
     for pid in body.paper_ids:
-        paper = paper_store.get_paper(pid)
+        paper = await paper_store.get_paper(pid)
         if paper:
             try:
                 c = generate_citation(paper, body.style)
@@ -1278,10 +1279,10 @@ class ThemeRequest(BaseModel):
 
 
 @router.post("/themes")
-def detect_themes(body: ThemeRequest):
+async def detect_themes(body: ThemeRequest):
     papers_text = []
     for pid in body.paper_ids:
-        paper = paper_store.get_paper(pid)
+        paper = await paper_store.get_paper(pid)
         if paper:
             summary = paper.get("executive_summary") or paper.get("key_findings") or ""
             papers_text.append(f"Paper: {paper.get('filename')}\n{summary[:1000]}")
@@ -1313,8 +1314,8 @@ Return as JSON array. Papers text:
 # ---------------------------------------------------------------------------
 
 @router.get("/citation-count/{paper_id}")
-def get_citation_count(paper_id: str):
-    paper = paper_store.get_paper(paper_id)
+async def get_citation_count(paper_id: str):
+    paper = await paper_store.get_paper(paper_id)
     if not paper:
         raise HTTPException(404, "Paper not found")
     meta = paper.get("metadata") or {}
@@ -1337,8 +1338,8 @@ def get_citation_count(paper_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/reading-stats")
-def get_reading_stats():
-    papers = paper_store.list_papers()
+async def get_reading_stats():
+    papers = await paper_store.list_papers()
     now = time.time()
     thirty_days = 30 * 24 * 3600
     
@@ -1381,7 +1382,7 @@ async def suggest_tags_for_upload(paper_id: str = ""):
         "Given the following paper title and abstract, suggest 5-10 relevant tags for categorization. "
         "Return only a JSON array of strings."
     )
-    papers = paper_store.list_papers()
+    papers = await paper_store.list_papers()
     target = None
     for p in papers:
         if p.get("id") == paper_id:
@@ -1412,7 +1413,7 @@ async def detect_contradictions(paper_ids: str = ""):
     if len(ids) < 2:
         raise HTTPException(400, "Need at least 2 paper IDs")
     
-    papers = paper_store.list_papers()
+    papers = await paper_store.list_papers()
     selected = [p for p in papers if p.get("id") in ids]
     if len(selected) < 2:
         raise HTTPException(400, "Could not find enough papers")
@@ -1444,7 +1445,7 @@ async def detect_contradictions(paper_ids: str = ""):
 async def research_gaps(paper_ids: str = ""):
     from ..llm_client import gemini_generate
     ids = [i.strip() for i in paper_ids.split(",") if i.strip()]
-    papers = paper_store.list_papers()
+    papers = await paper_store.list_papers()
     selected = [p for p in papers if p.get("id") in ids][:10] if ids else papers[:10]
     
     summaries = []
@@ -1472,7 +1473,7 @@ async def research_gaps(paper_ids: str = ""):
 @router.get("/read-next")
 async def what_to_read_next(paper_id: str = ""):
     from ..llm_client import gemini_generate
-    papers = paper_store.list_papers()
+    papers = await paper_store.list_papers()
     if not papers:
         return {"recommendations": [], "reasoning": "No papers in library"}
     
@@ -1527,7 +1528,7 @@ async def import_data(file: UploadFile = File(...)):
     except Exception:
         raise HTTPException(400, "Invalid JSON file")
     
-    papers = paper_store.list_papers()
+    papers = await paper_store.list_papers()
     existing_ids = {p.get("id") for p in papers}
     existing_titles = {(p.get("metadata") or {}).get("title", "").lower() for p in papers}
     
@@ -1543,17 +1544,15 @@ async def import_data(file: UploadFile = File(...)):
                 if pid in existing_ids or title in existing_titles:
                     skipped += 1
                     continue
-                paper_store.save_paper(p)
+                await paper_store.save_paper(p)
                 imported_papers += 1
         if "collections" in data:
             for c in data["collections"]:
                 cid = c.get("id")
                 if cid:
-                    paper_store.db.execute(
-                        "INSERT OR IGNORE INTO collections (collection_id, name, category, created_at) VALUES (?, ?, ?, ?)",
-                        (cid, c.get("name", "Imported"), c.get("category", ""), time.time())
+                    await paper_store.create_collection(
+                        c.get("name", "Imported"), "", c.get("category", "")
                     )
-                    paper_store.db.commit()
                     imported_collections += 1
     elif isinstance(data, list):
         for p in data:
@@ -1562,7 +1561,7 @@ async def import_data(file: UploadFile = File(...)):
             if pid in existing_ids or title in existing_titles:
                 skipped += 1
                 continue
-            paper_store.save_paper(p)
+            await paper_store.save_paper(p)
             imported_papers += 1
     
     return {
@@ -1574,22 +1573,31 @@ async def import_data(file: UploadFile = File(...)):
 
 @router.post("/pin/{paper_id}")
 async def toggle_pin(paper_id: str):
-    p = paper_store.get_paper(paper_id)
+    p = await paper_store.get_paper(paper_id)
     if not p:
         raise HTTPException(404, "Paper not found")
     meta = p.get("metadata") or {}
     meta["pinned"] = not meta.get("pinned", False)
-    p["metadata"] = meta
-    paper_store.db.execute("UPDATE papers SET metadata = ? WHERE paper_id = ?", (json.dumps(meta), paper_id))
-    paper_store.db.commit()
+    await paper_store.update_metadata(paper_id, meta)
     return {"pinned": meta.get("pinned", False)}
 
 
 @router.post("/collections/{collection_id}/color")
 async def update_collection_color(collection_id: str, body: dict):
     color = body.get("color", "#3525cd")
-    paper_store.db.execute(
-        "UPDATE collections SET color = ? WHERE collection_id = ?", (color, collection_id)
-    )
-    paper_store.db.commit()
+    pool = await paper_store.get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE collections SET color = $1 WHERE collection_id = $2", color, collection_id
+        )
     return {"ok": True, "color": color}
+
+
+@router.get("/vector-docs")
+async def list_vector_documents():
+    from ..storage.vector_store import get_all_documents
+    try:
+        docs = await get_all_documents()
+        return {"total": len(docs), "documents": docs}
+    except Exception as e:
+        return {"total": 0, "documents": [], "error": str(e)}

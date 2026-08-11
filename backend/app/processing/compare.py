@@ -22,34 +22,34 @@ papers by their IDs.
 """
 
 
-def _gather_chunks(paper_ids: list[str], chunks_per_paper: int = 10) -> dict[str, str]:
+async def _gather_chunks(paper_ids: list[str], chunks_per_paper: int = 10) -> dict[str, str]:
     papers = {}
     broad_query = "methodology results findings experiments"
     for pid in paper_ids:
-        matches = similarity_search(broad_query, paper_id=pid, top_k=chunks_per_paper)
+        matches = await similarity_search(broad_query, paper_id=pid, top_k=chunks_per_paper)
         papers[pid] = "\n\n".join(
             f"[page {m['page']}] {m['text']}" for m in matches
         )
     return papers
 
 
-def compare_papers(paper_ids: list[str], chunks_per_paper: int = 10) -> dict:
+async def compare_papers(paper_ids: list[str], chunks_per_paper: int = 10) -> dict:
     if len(paper_ids) < 2:
         raise ValueError("At least two paper IDs are required for comparison")
 
-    papers = _gather_chunks(paper_ids, chunks_per_paper)
+    papers = await _gather_chunks(paper_ids, chunks_per_paper)
 
     papers_text = ""
     for pid in paper_ids:
         papers_text += f"=== Paper {pid} ===\n{papers[pid]}\n\n"
 
-    raw = gemini_generate_json(
+    raw = await gemini_generate_json(
         COMPARE_PROMPT.format(n=len(paper_ids), papers_text=papers_text)
     )
     return json.loads(raw)
 
 
-def compare_methodologies(paper_ids: list[str]) -> dict:
+async def compare_methodologies(paper_ids: list[str]) -> dict:
     from ..storage import paper_store
     from ..llm_client import gemini_generate
 
@@ -58,7 +58,7 @@ def compare_methodologies(paper_ids: list[str]) -> dict:
 
     papers = []
     for pid in paper_ids:
-        p = paper_store.get_paper(pid)
+        p = await paper_store.get_paper(pid)
         if p:
             papers.append(p)
 
@@ -87,7 +87,7 @@ Papers:
     prompt = METHODOLOGY_PROMPT.format(n=len(papers)) + papers_text
 
     try:
-        comparison = gemini_generate(prompt)
+        comparison = await gemini_generate(prompt)
         return {"methodology_comparison": comparison}
     except Exception as e:
         return {"error": f"Methodology comparison failed: {e}"}
