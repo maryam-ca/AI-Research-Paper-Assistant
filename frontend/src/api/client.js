@@ -1,4 +1,4 @@
-export const API = import.meta.env.VITE_API_URL || "http://localhost:8001/api";
+export const API = import.meta.env.VITE_API_URL || "/api";
 const T = 60_000;
 const LT = 180_000;
 

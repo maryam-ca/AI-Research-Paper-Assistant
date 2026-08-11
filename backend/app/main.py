@@ -19,6 +19,10 @@ ALLOWED_ORIGINS = [
     "http://localhost:8003",
     os.environ.get("FRONTEND_URL", ""),
 ]
+# Add Vercel frontend URL if provided
+vercel_frontend = os.environ.get("VERCEL_FRONTEND_URL", "")
+if vercel_frontend:
+    ALLOWED_ORIGINS.append(vercel_frontend)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

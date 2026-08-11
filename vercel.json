@@ -1,23 +1,12 @@
 {
-  "version": 2,
-  "buildCommand": "cd frontend && npm install && npm run build",
-  "outputDirectory": "frontend/dist",
-  "framework": "vite",
-  "installCommand": "cd frontend && npm install",
-  "devCommand": "cd frontend && npm run dev",
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 60
-    }
-  },
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "api/index.py"
+  "services": {
+    "frontend": {
+      "root": "frontend",
+      "framework": "vite"
     },
-    {
-      "src": "/(.*)",
-      "dest": "/$1"
+    "backend": {
+      "root": "backend",
+      "entrypoint": "app.main:app"
     }
-  ]
+  }
 }
