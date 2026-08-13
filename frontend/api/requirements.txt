@@ -1,0 +1,14 @@
+# Backend dependencies (FastAPI + serverless on Vercel via Mangum)
+fastapi==0.115.2
+uvicorn[standard]==0.31.0
+mangum==0.17.0
+psycopg[binary]==3.2.1
+sqlalchemy==2.0.35
+pydantic==2.9.2
+python-multipart==0.0.12
+python-dotenv==1.0.1
+pypdf==4.3.1
+python-docx==1.1.2
+requests==2.32.3
+google-generativeai==0.8.3
+Pillow==10.4.0

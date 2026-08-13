@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply text-ink bg-cream dark:bg-slate-900 dark:text-slate-100;
+    font-family: var(--app-font, 'Inter', system-ui, sans-serif);
+    cursor: var(--app-cursor, auto);
+  }
+  h1, h2, h3 {
+    @apply font-display;
+  }
+}
+
+:root {
+  --app-accent: #4f46e5;
+  --app-font: 'Inter', system-ui, sans-serif;
+  --app-cursor: auto;
+}
+
+/* Appearance-driven accent + font overrides (controlled from Settings) */
+.text-primary { color: var(--app-accent) !important; }
+.bg-primary { background-color: var(--app-accent) !important; }
+.border-primary { border-color: var(--app-accent) !important; }
+.bg-primary-50 { background-color: color-mix(in srgb, var(--app-accent) 12%, transparent) !important; }
+.text-terracotta { color: var(--app-accent) !important; }
+.border-terracotta { border-color: var(--app-accent) !important; }
+.btn-primary { background-color: var(--app-accent) !important; }
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply btn bg-primary text-white hover:bg-primary-700;
+  }
+  .btn-ghost {
+    @apply btn text-slate-600 dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/10;
+  }
+  /* Academic Precision cards: white surface, 1px border, 12px radius, no heavy shadow */
+  .card {
+    @apply rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800;
+  }
+  .input {
+    @apply w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm
+           focus:outline-none focus:ring-2 focus:ring-primary/60;
+  }
+
+  /* Source badges (arXiv / DOI / PDF / URL) */
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide;
+  }
+  .badge-arxiv { @apply bg-[#eff6ff] text-[#1d4ed8] dark:bg-[#1e3a8a]/40 dark:text-[#bfdbfe]; }
+  .badge-doi   { @apply bg-[#ecfdf5] text-[#047857] dark:bg-[#065f46]/40 dark:text-[#6ee7b7]; }
+  .badge-pdf   { @apply bg-[#fffbeb] text-[#b45309] dark:bg-[#92400e]/40 dark:text-[#fcd34d]; }
+  .badge-url   { @apply bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200; }
+
+  .kbd {
+    @apply inline-flex min-w-[24px] items-center justify-center rounded border border-slate-300 dark:border-slate-600
+           bg-slate-50 dark:bg-slate-700 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:text-slate-200;
+  }
+}

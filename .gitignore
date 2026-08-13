@@ -1,0 +1,37 @@
+node_modules/
+dist/
+dist-ssr/
+.env
+.env.local
+.env.production
+*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.Python
+*.sqlite3
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel/
+
+# Local dev blob fallback (file_handler.py dev mode)
+frontend/api/.blobs/
+
+# Archive is reference-only
+archive/
