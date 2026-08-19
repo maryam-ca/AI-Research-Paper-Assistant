@@ -1,0 +1,11 @@
+@"
+api.venv/
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.env
+.env.local
+"@ | Set-Content .\frontend\.vercelignore
