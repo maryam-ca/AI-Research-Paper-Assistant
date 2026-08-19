@@ -1,4 +1,26 @@
 {
   "version": 2,
-  "buildCommand": "npm install && npm run build"
+  "buildCommand": "npm install && npm run build",
+  "headers": [
+    {
+      "source": "/assets/(.*)\\.js",
+      "headers": [{ "key": "Content-Type", "value": "application/javascript" }]
+    },
+    {
+      "source": "/assets/(.*)\\.css",
+      "headers": [{ "key": "Content-Type", "value": "text/css" }]
+    },
+    {
+      "source": "/assets/(.*)\\.svg",
+      "headers": [{ "key": "Content-Type", "value": "image/svg+xml" }]
+    },
+    {
+      "source": "/favicon\\.svg",
+      "headers": [{ "key": "Content-Type", "value": "image/svg+xml" }]
+    },
+    {
+      "source": "/assets/(.*)\\.woff2?",
+      "headers": [{ "key": "Content-Type", "value": "font/woff2" }]
+    }
+  ]
 }
