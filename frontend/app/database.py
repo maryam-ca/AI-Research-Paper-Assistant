@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+
 # =========================================================
 # ENVIRONMENT
 # =========================================================
@@ -14,8 +15,10 @@ ENV_FILE = FRONTEND_DIR / ".env.local"
 
 # Load .env.local for local development.
 # On Vercel, DATABASE_URL comes from Vercel Environment Variables.
+
 if ENV_FILE.exists():
     load_dotenv(ENV_FILE)
+
 
 # =========================================================
 # DATABASE URL
@@ -31,11 +34,19 @@ if not DATABASE_URL:
         "for production."
     )
 
+
 # =========================================================
-# FORCE SQLAlchemy TO USE psycopg v3
+# FORCE SQLALCHEMY TO USE PSYCOPG V3
 # =========================================================
 
-if DATABASE_URL.startswith("postgresql://"):
+if DATABASE_URL.startswith("postgresql+psycopg2://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgresql+psycopg2://",
+        "postgresql+psycopg://",
+        1,
+    )
+
+elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace(
         "postgresql://",
         "postgresql+psycopg://",
@@ -49,11 +60,26 @@ elif DATABASE_URL.startswith("postgres://"):
         1,
     )
 
+
+# =========================================================
+# SAFE DEBUG LOG
+# =========================================================
+
+# Prints only the database driver.
+# It NEVER prints the username/password/host.
+
+print(
+    "DATABASE DRIVER:",
+    DATABASE_URL.split("://", 1)[0],
+)
+
+
 # =========================================================
 # SQLALCHEMY BASE
 # =========================================================
 
 Base = declarative_base()
+
 
 # =========================================================
 # DATABASE ENGINE
@@ -68,6 +94,7 @@ engine = create_engine(
     **engine_kwargs,
 )
 
+
 # =========================================================
 # SESSION
 # =========================================================
@@ -77,6 +104,7 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine,
 )
+
 
 # =========================================================
 # FASTAPI DATABASE DEPENDENCY
