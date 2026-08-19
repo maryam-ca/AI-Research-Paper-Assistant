@@ -5,22 +5,17 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-
 # =========================================================
 # ENVIRONMENT
 # =========================================================
 
-# frontend/
 FRONTEND_DIR = Path(__file__).resolve().parent.parent
-
-# Local environment file
 ENV_FILE = FRONTEND_DIR / ".env.local"
 
 # Load .env.local for local development.
 # On Vercel, DATABASE_URL comes from Vercel Environment Variables.
 if ENV_FILE.exists():
     load_dotenv(ENV_FILE)
-
 
 # =========================================================
 # DATABASE URL
@@ -36,13 +31,29 @@ if not DATABASE_URL:
         "for production."
     )
 
+# =========================================================
+# FORCE SQLAlchemy TO USE psycopg v3
+# =========================================================
+
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgresql://",
+        "postgresql+psycopg://",
+        1,
+    )
+
+elif DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgres://",
+        "postgresql+psycopg://",
+        1,
+    )
 
 # =========================================================
 # SQLALCHEMY BASE
 # =========================================================
 
 Base = declarative_base()
-
 
 # =========================================================
 # DATABASE ENGINE
@@ -52,13 +63,10 @@ engine_kwargs = {
     "pool_pre_ping": True,
 }
 
-
-# Neon/PostgreSQL and local PostgreSQL
 engine = create_engine(
     DATABASE_URL,
     **engine_kwargs,
 )
-
 
 # =========================================================
 # SESSION
@@ -69,7 +77,6 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine,
 )
-
 
 # =========================================================
 # FASTAPI DATABASE DEPENDENCY
