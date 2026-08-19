@@ -1,8 +1,10 @@
-[tool.vercel]
-entrypoint = "app.main:app"
-
-# Disable Vercel's FastAPI static CDN promotion. Serving files from the
-# function (instead of the CDN) avoids the "text/jsx" MIME type returned for
-# .js bundles, which breaks ES module loading.
+# Vercel: disable FastAPI static CDN promotion. Serving static files from the
+# function (instead of the build-time CDN promotion) avoids the "text/jsx"
+# MIME type returned for .js bundles, which breaks ES module loading.
+#
+# NOTE: no [tool.vercel] entrypoint is set here on purpose. Vercel auto-detects
+# the FastAPI app at app/main.py within the Frontend Root Directory, which is
+# the path that is known to build and deploy correctly. A custom entrypoint
+# here caused Vercel to fail detection and produce an empty deployment.
 [tool.vercel.fastapi.static]
 cdn = false
