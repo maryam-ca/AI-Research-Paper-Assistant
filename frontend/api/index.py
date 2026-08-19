@@ -1,9 +1,11 @@
 import os
 import sys
 
-API_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
-if API_DIR not in sys.path:
-    sys.path.insert(0, API_DIR)
+if FRONTEND_DIR not in sys.path:
+    sys.path.insert(0, FRONTEND_DIR)
 
-from main import app
+from app.main import app

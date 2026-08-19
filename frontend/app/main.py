@@ -1,15 +1,31 @@
 import os
 import mimetypes
-from dotenv import load_dotenv
 
-# Load .env.local from the frontend/ directory (parent of frontend/app/)
-_ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env.local")
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from app.routes import router
+
+
+# ---------------------------------------------------------
+# Environment
+# ---------------------------------------------------------
+
+# Load local .env.local during local development.
+# On Vercel, environment variables come from Vercel Settings.
+
+_FRONTEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ENV_PATH = os.path.join(_FRONTEND, ".env.local")
+
 load_dotenv(_ENV_PATH)
 
-# Force correct MIME types for static assets. Vercel's FastAPI static CDN
-# promotion has been observed to serve .js with a "text/jsx" content type,
-# which breaks ES module loading. add_type overrides the system database and
-# is applied here before app.frontend registers the file handlers.
+
+# ---------------------------------------------------------
+# MIME Types
+# ---------------------------------------------------------
+
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
@@ -17,32 +33,76 @@ mimetypes.add_type("image/svg+xml", ".svg")
 mimetypes.add_type("application/json", ".json")
 mimetypes.add_type("font/woff2", ".woff2")
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-from routes import router
+# ---------------------------------------------------------
+# FastAPI Application
+# ---------------------------------------------------------
 
-app = FastAPI(title="ScholarFlow API", version="1.0.0")
+app = FastAPI(
+    title="ScholarFlow API",
+    version="1.0.0",
+)
 
-# CORS for local dev and production. Avoid wildcards with credentials.
+
+# ---------------------------------------------------------
+# CORS
+# ---------------------------------------------------------
+
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://scholarflow.vercel.app",
+    "https://ai-research-paper-assistant-v1.vercel.app",
 ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS + ["https://*.vercel.app"],
-    allow_origin_regex=r"chrome-extension://.*",
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# ---------------------------------------------------------
+# API Routes
+# ---------------------------------------------------------
+
 app.include_router(router)
 
-# Serve the built SPA (frontend/dist) as the fallback for non-API routes.
-# Path operations (e.g. /api/...) always take precedence over frontend files.
-_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dist")
+
+# ---------------------------------------------------------
+# Root API Endpoint
+# ---------------------------------------------------------
+
+@app.get("/")
+def root():
+    return {
+        "service": "ScholarFlow API",
+        "status": "running",
+        "docs": "/docs",
+    }
+
+
+# ---------------------------------------------------------
+# Serve React Frontend
+# ---------------------------------------------------------
+
+_DIST = os.path.join(_FRONTEND, "dist")
+
 if os.path.isdir(_DIST):
-    app.frontend("/", directory=_DIST, fallback="index.html")
+    app.mount(
+        "/",
+        StaticFiles(directory=_DIST, html=True),
+        name="frontend",
+    )
+
+
+# ---------------------------------------------------------
+# Vercel / Mangum Handler
+# ---------------------------------------------------------
+
+from mangum import Mangum
+
+handler = Mangum(app)
