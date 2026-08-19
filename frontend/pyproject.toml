@@ -1,0 +1,8 @@
+[tool.vercel]
+entrypoint = "app.main:app"
+
+# Disable Vercel's FastAPI static CDN promotion. Serving files from the
+# function (instead of the CDN) avoids the "text/jsx" MIME type returned for
+# .js bundles, which breaks ES module loading.
+[tool.vercel.fastapi.static]
+cdn = false

@@ -1,9 +1,21 @@
 import os
+import mimetypes
 from dotenv import load_dotenv
 
 # Load .env.local from the frontend/ directory (parent of frontend/app/)
 _ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env.local")
 load_dotenv(_ENV_PATH)
+
+# Force correct MIME types for static assets. Vercel's FastAPI static CDN
+# promotion has been observed to serve .js with a "text/jsx" content type,
+# which breaks ES module loading. add_type overrides the system database and
+# is applied here before app.frontend registers the file handlers.
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("font/woff2", ".woff2")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
