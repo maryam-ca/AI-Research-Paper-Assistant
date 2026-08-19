@@ -1,6 +1,7 @@
-# Backend dependencies (FastAPI served natively on Vercel)
+# Backend dependencies (FastAPI wrapped by Mangum for Vercel's legacy Python builder)
 fastapi>=0.138.0
 uvicorn[standard]>=0.31.0
+mangum>=0.19.0
 psycopg[binary]>=3.2.1
 sqlalchemy>=2.0.35
 pydantic>=2.9.2

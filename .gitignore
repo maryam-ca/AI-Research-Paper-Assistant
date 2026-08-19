@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# dist/ must be committed so Vercel's legacy (builds) pipeline can serve it:
+# it is the output of `npm run build` in frontend/.
 dist-ssr/
 .env
 .env.local
