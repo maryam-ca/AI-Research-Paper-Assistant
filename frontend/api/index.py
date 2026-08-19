@@ -1,5 +1,3 @@
-"""Vercel entry point for the FastAPI application."""
-
 import os
 import sys
 
