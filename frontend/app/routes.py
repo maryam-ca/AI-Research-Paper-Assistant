@@ -1,10 +1,8 @@
 """All API routes for the Research Paper Analysis Agent."""
-
 import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
-
 from fastapi import (
     APIRouter,
     Body,
@@ -16,11 +14,9 @@ from fastapi import (
 from fastapi.responses import Response
 from sqlalchemy import extract, func, or_, text
 from sqlalchemy.orm import Session
-
 # =========================================================
 # APPLICATION PACKAGE IMPORTS
 # =========================================================
-
 from app.database import get_db
 from app.models import (
     Activity,
@@ -58,28 +54,18 @@ from app.synthesis import (
     translate_text,
 )
 from app.vectorstore import similar_papers
-
-
 # =========================================================
 # LOGGER
 # =========================================================
-
 logger = logging.getLogger("routes")
-
-
 # =========================================================
 # ROUTER
 # =========================================================
-
 router = APIRouter(prefix="/api")
-
 security_router = router
-
-
 # =========================================================
 # HELPERS
 # =========================================================
-
 def pid(value: str) -> uuid.UUID:
     """Convert a string into a UUID."""
     try:
@@ -89,11 +75,8 @@ def pid(value: str) -> uuid.UUID:
             status_code=400,
             detail="Invalid paper id",
         )
-
-
 def _serialize_paper(p: Paper) -> dict:
     """Convert a Paper SQLAlchemy object into JSON-safe data."""
-
     return {
         "id": str(p.id),
         "title": p.title,
@@ -134,32 +117,24 @@ def _serialize_paper(p: Paper) -> dict:
         "reproducibility_score": p.reproducibility_score,
         "quality_flags": p.quality_flags or [],
     }
-
-
 # =========================================================
 # HEALTH
 # =========================================================
-
 @router.get("/health")
 def health():
     return {
         "status": "ok",
     }
-
-
 # =========================================================
 # PAPERS
 # =========================================================
-
 @router.post("/papers/upload")
 async def upload_paper(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     data = await file.read()
-
     name = (file.filename or "upload").lower()
-
     if name.endswith(".pdf"):
         source_type = "pdf"
     elif name.endswith(".docx"):
@@ -169,26 +144,21 @@ async def upload_paper(
             status_code=400,
             detail="Only PDF and DOCX are supported",
         )
-
-    file_url = upload_bytes(
+    file_url = await upload_bytes(
         data,
         f"papers/{uuid.uuid4()}-{name}",
         file.content_type or "application/pdf",
     )
-
     title = file.filename or "Untitled"
-
     thumb = generate_thumbnail(
         title,
         str(uuid.uuid4()),
     )
-
-    thumb_url = upload_bytes(
+    thumb_url = await upload_bytes(
         thumb,
         f"thumbs/{uuid.uuid4()}.jpg",
         "image/jpeg",
     )
-
     paper = Paper(
         title=title,
         source_type=source_type,
@@ -196,10 +166,8 @@ async def upload_paper(
         file_url=file_url,
         thumbnail_url=thumb_url,
     )
-
     db.add(paper)
     db.flush()
-
     db.add(
         Activity(
             paper_id=paper.id,
@@ -207,13 +175,9 @@ async def upload_paper(
             details=title,
         )
     )
-
     db.commit()
     db.refresh(paper)
-
     return _serialize_paper(paper)
-
-
 @router.post("/papers/fetch")
 async def fetch_paper(
     payload: dict = Body(...),
@@ -221,33 +185,26 @@ async def fetch_paper(
 ):
     source = payload.get("source")
     value = payload.get("value")
-
     if not source or not value:
         raise HTTPException(
             status_code=400,
             detail="source and value required",
         )
-
     if source == "arxiv":
         meta = fetch_arxiv_metadata(value)
-
     elif source == "doi":
         meta = fetch_doi_metadata(value)
-
     elif source == "url":
         meta = fetch_url_metadata(value)
-
     else:
         raise HTTPException(
             status_code=400,
             detail="source must be arxiv, doi or url",
         )
-
     paper_bytes = b""
-
     if meta.get("pdf_url"):
         try:
-            paper_bytes = download_bytes(
+            paper_bytes = await download_bytes(
                 meta["pdf_url"]
             )
         except Exception as e:
@@ -255,27 +212,22 @@ async def fetch_paper(
                 "Could not download PDF: %s",
                 e,
             )
-
     file_url = None
-
     if paper_bytes:
-        file_url = upload_bytes(
+        file_url = await upload_bytes(
             paper_bytes,
             f"papers/{uuid.uuid4()}.pdf",
             "application/pdf",
         )
-
     thumb = generate_thumbnail(
         meta["title"],
         str(uuid.uuid4()),
     )
-
-    thumb_url = upload_bytes(
+    thumb_url = await upload_bytes(
         thumb,
         f"thumbs/{uuid.uuid4()}.jpg",
         "image/jpeg",
     )
-
     paper = Paper(
         title=meta["title"],
         authors=meta.get("authors"),
@@ -285,10 +237,8 @@ async def fetch_paper(
         file_url=file_url,
         thumbnail_url=thumb_url,
     )
-
     db.add(paper)
     db.flush()
-
     db.add(
         Activity(
             paper_id=paper.id,
@@ -296,13 +246,9 @@ async def fetch_paper(
             details=f"fetched {source}",
         )
     )
-
     db.commit()
     db.refresh(paper)
-
     return _serialize_paper(paper)
-
-
 @router.get("/papers")
 def list_papers(
     db: Session = Depends(get_db),
@@ -312,13 +258,10 @@ def list_papers(
         .order_by(Paper.upload_date.desc())
         .all()
     )
-
     return [
         _serialize_paper(p)
         for p in papers
     ]
-
-
 @router.get("/papers/{paper_id}")
 def get_paper(
     paper_id: str,
@@ -328,16 +271,12 @@ def get_paper(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     return _serialize_paper(p)
-
-
 @router.delete("/papers/{paper_id}")
 def delete_paper(
     paper_id: str,
@@ -347,25 +286,19 @@ def delete_paper(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     db.delete(p)
     db.commit()
-
     return {
         "deleted": True,
     }
-
-
 # =========================================================
 # ANALYSIS
 # =========================================================
-
 @router.post("/papers/{paper_id}/analyze")
 async def analyze(
     paper_id: str,
@@ -375,36 +308,29 @@ async def analyze(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     if not p.file_url:
         raise HTTPException(
             status_code=400,
             detail="No source file for this paper",
         )
-
-    data = download_bytes(
+    data = await download_bytes(
         p.file_url
     )
-
     result = analyze_paper(
         db,
         p.id,
         data,
         p.source_type or "pdf",
     )
-
     return {
         "paper_id": paper_id,
         **result,
     }
-
-
 @router.get("/papers/{paper_id}/summary")
 def get_summary(
     paper_id: str,
@@ -420,13 +346,11 @@ def get_summary(
         )
         .first()
     )
-
     if not s:
         raise HTTPException(
             status_code=404,
             detail="Summary not found. Run /analyze first.",
         )
-
     return {
         "executive_summary": s.executive_summary,
         "detailed_summary": s.detailed_summary,
@@ -438,8 +362,6 @@ def get_summary(
             else None
         ),
     }
-
-
 @router.get("/papers/{paper_id}/elements")
 def get_elements(
     paper_id: str,
@@ -455,13 +377,11 @@ def get_elements(
         )
         .first()
     )
-
     if not e:
         raise HTTPException(
             status_code=404,
             detail="Elements not found. Run /analyze first.",
         )
-
     return {
         "problem": e.problem,
         "methodology": e.methodology,
@@ -470,12 +390,9 @@ def get_elements(
         "contributions": e.contributions,
         "future_work": e.future_work,
     }
-
-
 # =========================================================
 # QUESTIONS
 # =========================================================
-
 @router.post("/papers/{paper_id}/question")
 def ask_question(
     paper_id: str,
@@ -483,13 +400,11 @@ def ask_question(
     db: Session = Depends(get_db),
 ):
     question = payload.get("question")
-
     if not question:
         raise HTTPException(
             status_code=400,
             detail="question required",
         )
-
     try:
         result = answer_question(
             db,
@@ -501,16 +416,13 @@ def ask_question(
             status_code=400,
             detail=str(e),
         )
-
     qa = QAHistory(
         paper_id=pid(paper_id),
         question=question,
         answer=result["answer"],
         cited_pages=result["cited_pages"],
     )
-
     db.add(qa)
-
     db.add(
         Activity(
             paper_id=pid(paper_id),
@@ -518,12 +430,8 @@ def ask_question(
             details=question[:120],
         )
     )
-
     db.commit()
-
     return result
-
-
 @router.get("/papers/{paper_id}/questions")
 def get_questions(
     paper_id: str,
@@ -539,7 +447,6 @@ def get_questions(
         )
         .all()
     )
-
     return [
         {
             "question": r.question,
@@ -548,25 +455,20 @@ def get_questions(
         }
         for r in rows
     ]
-
-
 # =========================================================
 # COMPARE
 # =========================================================
-
 @router.post("/papers/compare")
 def compare(
     payload: dict = Body(...),
     db: Session = Depends(get_db),
 ):
     ids = payload.get("paper_ids") or []
-
     if len(ids) < 2:
         raise HTTPException(
             status_code=400,
             detail="Provide at least two paper_ids",
         )
-
     try:
         return compare_papers(
             db,
@@ -577,19 +479,15 @@ def compare(
             status_code=400,
             detail=str(e),
         )
-
-
 # =========================================================
 # RELATED PAPERS
 # =========================================================
-
 @router.get("/papers/{paper_id}/related")
 def related_papers(
     paper_id: str,
     db: Session = Depends(get_db),
 ):
     target = pid(paper_id)
-
     sub = (
         db.query(CollectionPaper.collection_id)
         .filter(
@@ -597,7 +495,6 @@ def related_papers(
         )
         .subquery()
     )
-
     related = (
         db.query(Paper)
         .join(
@@ -612,19 +509,15 @@ def related_papers(
         )
         .all()
     )
-
     return [
         _serialize_paper(p)
         for p in related
     ]
-
-
 # =========================================================
 # THUMBNAILS
 # =========================================================
-
 @router.get("/papers/{paper_id}/thumbnail")
-def get_thumbnail(
+async def get_thumbnail(
     paper_id: str,
     db: Session = Depends(get_db),
 ):
@@ -632,38 +525,30 @@ def get_thumbnail(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     if p.thumbnail_url:
         try:
-            data = download_bytes(
+            data = await download_bytes(
                 p.thumbnail_url
             )
-
             return Response(
                 content=data,
                 media_type="image/jpeg",
             )
-
         except Exception:
             pass
-
     data = generate_thumbnail(
         p.title,
         paper_id,
     )
-
     return Response(
         content=data,
         media_type="image/jpeg",
     )
-
-
 @router.post("/papers/{paper_id}/thumbnail")
 async def set_thumbnail(
     paper_id: str,
@@ -674,33 +559,25 @@ async def set_thumbnail(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     data = await file.read()
-
-    url = upload_bytes(
+    url = await upload_bytes(
         data,
         f"thumbs/{uuid.uuid4()}.jpg",
         "image/jpeg",
     )
-
     p.thumbnail_url = url
     db.commit()
-
     return {
         "thumbnail_url": url,
     }
-
-
 # =========================================================
 # EXPORT PAPER
 # =========================================================
-
 @router.get("/papers/{paper_id}/export")
 def export_markdown(
     paper_id: str,
@@ -711,13 +588,11 @@ def export_markdown(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     s = (
         db.query(Summary)
         .filter(
@@ -728,7 +603,6 @@ def export_markdown(
         )
         .first()
     )
-
     e = (
         db.query(KeyElements)
         .filter(
@@ -736,19 +610,16 @@ def export_markdown(
         )
         .first()
     )
-
     md = (
         f"# {p.title}\n\n"
         f"**Authors:** "
         f"{', '.join(p.authors or [])}\n\n"
     )
-
     if s:
         md += (
             f"## Executive Summary\n"
             f"{s.executive_summary}\n\n"
         )
-
         if s.key_findings:
             md += (
                 "## Key Findings\n"
@@ -758,10 +629,8 @@ def export_markdown(
                 )
                 + "\n\n"
             )
-
     if e:
         md += "## Key Elements\n"
-
         for label, val in [
             ("Problem", e.problem),
             ("Methodology", e.methodology),
@@ -775,7 +644,6 @@ def export_markdown(
                     f"### {label}\n"
                     f"{val}\n\n"
                 )
-
     if format == "obsidian":
         obs = (
             "---\n"
@@ -783,17 +651,14 @@ def export_markdown(
             "---\n\n"
             f"{md}"
         )
-
         for k in p.keywords or []:
             obs += (
                 f"\n#[[{k.replace(' ', '_')}]]"
             )
-
         return Response(
             content=obs,
             media_type="text/markdown",
         )
-
     if format == "notion":
         notion = {
             "parent": {
@@ -866,19 +731,14 @@ def export_markdown(
                 },
             ],
         }
-
         return notion
-
     return Response(
         content=md,
         media_type="text/markdown",
     )
-
-
 # =========================================================
 # SEARCH
 # =========================================================
-
 @router.get("/papers/search")
 def search_papers(
     q: Optional[str] = None,
@@ -890,10 +750,8 @@ def search_papers(
     db: Session = Depends(get_db),
 ):
     query = db.query(Paper)
-
     if q:
         qlike = f"%{q.strip().lower()}%"
-
         chunk_sub = (
             db.query(Chunk.paper_id)
             .filter(
@@ -901,7 +759,6 @@ def search_papers(
             )
             .subquery()
         )
-
         query = query.filter(
             or_(
                 Paper.title.ilike(qlike),
@@ -911,22 +768,18 @@ def search_papers(
                 Paper.id.in_(chunk_sub),
             )
         )
-
     if source_type:
         query = query.filter(
             Paper.source_type == source_type
         )
-
     if complexity:
         query = query.filter(
             Paper.complexity_level == complexity
         )
-
     if status:
         query = query.filter(
             Paper.reading_status == status
         )
-
     if year:
         query = query.filter(
             extract(
@@ -935,7 +788,6 @@ def search_papers(
             )
             == int(year)
         )
-
     if sort == "title":
         query = query.order_by(
             Paper.title.asc()
@@ -944,25 +796,19 @@ def search_papers(
         query = query.order_by(
             Paper.upload_date.desc()
         )
-
     return [
         _serialize_paper(p)
         for p in query.all()
     ]
-
-
 # =========================================================
 # READING STATUS
 # =========================================================
-
 VALID_STATUS = {
     "not_started",
     "reading",
     "reviewed",
     "completed",
 }
-
-
 @router.patch("/papers/{paper_id}/status")
 def set_status(
     paper_id: str,
@@ -973,47 +819,34 @@ def set_status(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     status = payload.get("status")
-
     if status and status not in VALID_STATUS:
         raise HTTPException(
             status_code=400,
             detail="Invalid status",
         )
-
     now = func.now()
-
     if status:
         p.reading_status = status
-
         if (
             status == "reading"
             and not p.started_reading_at
         ):
             p.started_reading_at = now
-
         if status == "completed":
             p.completed_reading_at = now
-
     p.last_read_at = now
-
     db.commit()
     db.refresh(p)
-
     return _serialize_paper(p)
-
-
 # =========================================================
 # FOLLOW-UP QUESTIONS
 # =========================================================
-
 @router.post("/papers/{paper_id}/suggest-questions")
 def suggest_questions(
     paper_id: str,
@@ -1024,17 +857,14 @@ def suggest_questions(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     previous = payload.get(
         "previous_question"
     )
-
     return {
         "suggestions": answer_question(
             db,
@@ -1044,12 +874,9 @@ def suggest_questions(
             previous=previous,
         )
     }
-
-
 # =========================================================
 # HIGHLIGHTS
 # =========================================================
-
 @router.post("/papers/{paper_id}/highlights")
 def add_highlight(
     paper_id: str,
@@ -1063,11 +890,9 @@ def add_highlight(
         color=payload.get("color", "yellow"),
         note=payload.get("note"),
     )
-
     db.add(h)
     db.commit()
     db.refresh(h)
-
     return {
         "id": str(h.id),
         "text": h.text,
@@ -1080,8 +905,6 @@ def add_highlight(
             else None
         ),
     }
-
-
 @router.get("/papers/{paper_id}/highlights")
 def get_highlights(
     paper_id: str,
@@ -1097,7 +920,6 @@ def get_highlights(
         )
         .all()
     )
-
     return [
         {
             "id": str(r.id),
@@ -1113,8 +935,6 @@ def get_highlights(
         }
         for r in rows
     ]
-
-
 @router.delete(
     "/papers/{paper_id}/highlights/{highlight_id}"
 )
@@ -1127,20 +947,15 @@ def delete_highlight(
         Highlight,
         pid(highlight_id),
     )
-
     if h:
         db.delete(h)
         db.commit()
-
     return {
         "deleted": True,
     }
-
-
 # =========================================================
 # SIMILAR PAPERS
 # =========================================================
-
 @router.get("/papers/{paper_id}/similar")
 def similar_papers_endpoint(
     paper_id: str,
@@ -1152,7 +967,6 @@ def similar_papers_endpoint(
         pid(paper_id),
         limit,
     )
-
     return [
         {
             "paper": _serialize_paper(p),
@@ -1160,12 +974,9 @@ def similar_papers_endpoint(
         }
         for p, score in res
     ]
-
-
 # =========================================================
 # LITERATURE REVIEW
 # =========================================================
-
 @router.post(
     "/collections/{collection_id}/generate-literature-review"
 )
@@ -1175,18 +986,15 @@ def generate_lr(
     db: Session = Depends(get_db),
 ):
     cid = uuid.UUID(collection_id)
-
     c = db.get(
         Collection,
         cid,
     )
-
     if not c:
         raise HTTPException(
             status_code=404,
             detail="Collection not found",
         )
-
     rows = (
         db.query(CollectionPaper)
         .filter(
@@ -1194,41 +1002,33 @@ def generate_lr(
         )
         .all()
     )
-
     paper_ids = [
         r.paper_id
         for r in rows
     ]
-
     if payload.get("paper_ids"):
         wanted = {
             uuid.UUID(x)
             for x in payload["paper_ids"]
         }
-
         paper_ids = [
             p
             for p in paper_ids
             if p in wanted
         ]
-
     papers = [
         db.get(Paper, paper_id)
         for paper_id in paper_ids
     ]
-
     papers = [
         p for p in papers if p
     ]
-
     if not papers:
         raise HTTPException(
             status_code=400,
             detail="No papers in this collection",
         )
-
     blocks = []
-
     for p in papers:
         s = (
             db.query(Summary)
@@ -1240,7 +1040,6 @@ def generate_lr(
             )
             .first()
         )
-
         e = (
             db.query(KeyElements)
             .filter(
@@ -1248,22 +1047,18 @@ def generate_lr(
             )
             .first()
         )
-
         part = f"# {p.title}\n"
-
         if s:
             part += (
                 f"Executive summary: "
                 f"{s.executive_summary}\n"
             )
-
             if s.key_findings:
                 part += (
                     "Key findings: "
                     + "; ".join(s.key_findings)
                     + "\n"
                 )
-
         if e:
             part += (
                 "Methodology: "
@@ -1276,38 +1071,29 @@ def generate_lr(
                 + (e.limitations or "")
                 + "\n"
             )
-
         blocks.append(part)
-
     block = "\n\n".join(blocks)
-
     tone = (
         payload.get("tone")
         or "academic"
     )
-
     length = (
         payload.get("length")
         or "standard"
     )
-
     lr = generate_literature_review(
         block,
         tone=tone,
         length=length,
     )
-
     return {
         "collection": c.name,
         "paper_count": len(papers),
         **lr,
     }
-
-
 # =========================================================
 # DIGEST
 # =========================================================
-
 @router.post("/digest")
 def generate_digest_endpoint(
     payload: dict = Body({}),
@@ -1317,29 +1103,24 @@ def generate_digest_endpoint(
         payload.get("frequency")
         or "weekly"
     ).lower()
-
     days = {
         "daily": 1,
         "monthly": 30,
     }.get(freq, 7)
-
     since = (
         datetime.now()
         - timedelta(days=days)
     )
-
     q = (
         db.query(Paper)
         .filter(
             Paper.upload_date >= since
         )
     )
-
     if payload.get("collection_id"):
         cid = uuid.UUID(
             payload["collection_id"]
         )
-
         in_coll = (
             db.query(
                 CollectionPaper.paper_id
@@ -1350,18 +1131,15 @@ def generate_digest_endpoint(
             )
             .subquery()
         )
-
         q = q.filter(
             Paper.id.in_(in_coll)
         )
-
     recent = (
         q.order_by(
             Paper.upload_date.desc()
         )
         .all()
     )
-
     acts = (
         db.query(Activity)
         .filter(
@@ -1369,11 +1147,9 @@ def generate_digest_endpoint(
         )
         .all()
     )
-
     block = (
         f"Period: last {days} days\n"
     )
-
     block += (
         "Papers added:\n"
         + (
@@ -1385,13 +1161,11 @@ def generate_digest_endpoint(
         )
         + "\n"
     )
-
     block += (
         "Recent activity count: "
         + str(len(acts))
         + "\n"
     )
-
     if recent:
         topics = sorted(
             {
@@ -1400,50 +1174,39 @@ def generate_digest_endpoint(
                 for k in (p.keywords or [])
             }
         )
-
         block += (
             "Topics: "
             + ", ".join(topics)[:500]
             + "\n"
         )
-
     md = generate_digest(block)
-
     return {
         "frequency": freq,
         "paper_count": len(recent),
         "markdown": md,
     }
-
-
 # =========================================================
 # COMPARE MATRIX
 # =========================================================
-
 @router.post("/papers/compare-matrix")
 def compare_matrix_endpoint(
     payload: dict = Body(...),
     db: Session = Depends(get_db),
 ):
     ids = payload.get("paper_ids") or []
-
     if len(ids) < 2:
         raise HTTPException(
             status_code=400,
             detail="Provide at least two paper_ids",
         )
-
     papers = [
         db.get(Paper, pid(i))
         for i in ids
     ]
-
     papers = [
         p for p in papers if p
     ]
-
     blocks = []
-
     for p in papers:
         s = (
             db.query(Summary)
@@ -1455,7 +1218,6 @@ def compare_matrix_endpoint(
             )
             .first()
         )
-
         e = (
             db.query(KeyElements)
             .filter(
@@ -1463,38 +1225,29 @@ def compare_matrix_endpoint(
             )
             .first()
         )
-
         part = (
             f"id={p.id}\n"
             f"title={p.title}\n"
         )
-
         if s:
             part += (
                 f"summary={s.executive_summary}\n"
             )
-
         if e:
             part += (
                 f"methodology={e.methodology}\n"
                 f"results={e.results}\n"
             )
-
         blocks.append(part)
-
     rows = generate_compare_matrix(
         "\n\n".join(blocks)
     )
-
     return {
         "rows": rows,
     }
-
-
 # =========================================================
 # RESEARCH QUESTIONS
 # =========================================================
-
 def _serialize_rq(
     r: ResearchQuestion,
 ) -> dict:
@@ -1511,8 +1264,6 @@ def _serialize_rq(
             else None
         ),
     }
-
-
 @router.post(
     "/collections/{collection_id}/research-questions"
 )
@@ -1522,13 +1273,11 @@ def add_rq(
     db: Session = Depends(get_db),
 ):
     cid = uuid.UUID(collection_id)
-
     if not db.get(Collection, cid):
         raise HTTPException(
             status_code=404,
             detail="Collection not found",
         )
-
     rq = ResearchQuestion(
         collection_id=cid,
         question_text=payload.get(
@@ -1546,14 +1295,10 @@ def add_rq(
             "active",
         ),
     )
-
     db.add(rq)
     db.commit()
     db.refresh(rq)
-
     return _serialize_rq(rq)
-
-
 @router.get(
     "/collections/{collection_id}/research-questions"
 )
@@ -1562,7 +1307,6 @@ def list_rq(
     db: Session = Depends(get_db),
 ):
     cid = uuid.UUID(collection_id)
-
     rows = (
         db.query(ResearchQuestion)
         .filter(
@@ -1574,13 +1318,10 @@ def list_rq(
         )
         .all()
     )
-
     return [
         _serialize_rq(r)
         for r in rows
     ]
-
-
 @router.patch(
     "/research-questions/{rq_id}"
 )
@@ -1593,13 +1334,11 @@ def patch_rq(
         ResearchQuestion,
         pid(rq_id),
     )
-
     if not r:
         raise HTTPException(
             status_code=404,
             detail="Not found",
         )
-
     for field in (
         "question_text",
         "hypothesis",
@@ -1612,13 +1351,9 @@ def patch_rq(
                 field,
                 payload[field],
             )
-
     db.commit()
     db.refresh(r)
-
     return _serialize_rq(r)
-
-
 @router.delete(
     "/research-questions/{rq_id}"
 )
@@ -1630,32 +1365,24 @@ def del_rq(
         ResearchQuestion,
         pid(rq_id),
     )
-
     if r:
         db.delete(r)
         db.commit()
-
     return {
         "deleted": True,
     }
-
-
 # =========================================================
 # ANALYTICS
 # =========================================================
-
 @router.get("/analytics/dashboard")
 def analytics_dashboard(
     collection_id: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     from collections import Counter
-
     q = db.query(Paper)
-
     if collection_id:
         cid = uuid.UUID(collection_id)
-
         sub = (
             db.query(CollectionPaper.paper_id)
             .filter(
@@ -1664,44 +1391,36 @@ def analytics_dashboard(
             )
             .subquery()
         )
-
         q = q.filter(
             Paper.id.in_(sub)
         )
-
     papers = q.all()
-
     topic_counts = Counter(
         k
         for p in papers
         for k in (p.keywords or [])
     )
-
     monthly = Counter(
         f"{p.upload_date.year}-{p.upload_date.month:02d}"
         for p in papers
         if p.upload_date
     )
-
     rigors = [
         p.rigor_score
         for p in papers
         if p.rigor_score is not None
     ]
-
     repro = [
         p.reproducibility_score
         for p in papers
         if p.reproducibility_score is not None
     ]
-
     def avg(xs):
         return (
             round(sum(xs) / len(xs), 1)
             if xs
             else None
         )
-
     return {
         "total": len(papers),
         "top_topics": topic_counts.most_common(15),
@@ -1737,12 +1456,9 @@ def analytics_dashboard(
         "avg_rigor": avg(rigors),
         "avg_reproducibility": avg(repro),
     }
-
-
 # =========================================================
 # TRANSLATE
 # =========================================================
-
 @router.post(
     "/papers/{paper_id}/translate"
 )
@@ -1755,18 +1471,15 @@ def translate_paper(
         Paper,
         pid(paper_id),
     )
-
     if not p:
         raise HTTPException(
             status_code=404,
             detail="Paper not found",
         )
-
     lang = (
         payload.get("target_language")
         or "es"
     )
-
     s = (
         db.query(Summary)
         .filter(
@@ -1777,7 +1490,6 @@ def translate_paper(
         )
         .first()
     )
-
     e = (
         db.query(KeyElements)
         .filter(
@@ -1785,11 +1497,9 @@ def translate_paper(
         )
         .first()
     )
-
     out = {
         "target_language": lang,
     }
-
     if s:
         out["executive_summary"] = (
             translate_text(
@@ -1797,14 +1507,12 @@ def translate_paper(
                 lang,
             )
         )
-
         out["detailed_summary"] = (
             translate_text(
                 s.detailed_summary,
                 lang,
             )
         )
-
         out["key_findings"] = [
             translate_text(
                 f,
@@ -1812,7 +1520,6 @@ def translate_paper(
             )
             for f in (s.key_findings or [])
         ]
-
     if e:
         out["key_elements"] = {
             f: translate_text(
@@ -1821,34 +1528,26 @@ def translate_paper(
             )
             for f in FIELDS
         }
-
     return out
-
-
 # =========================================================
 # QUICK ADD
 # =========================================================
-
 @router.post("/papers/quick-add")
 async def quick_add(
     payload: dict = Body(...),
     db: Session = Depends(get_db),
 ):
     url = payload.get("url")
-
     if not url:
         raise HTTPException(
             status_code=400,
             detail="url required",
         )
-
     meta = fetch_url_metadata(url)
-
     paper_bytes = b""
-
     if meta.get("pdf_url"):
         try:
-            paper_bytes = download_bytes(
+            paper_bytes = await download_bytes(
                 meta["pdf_url"]
             )
         except Exception as e:
@@ -1856,27 +1555,22 @@ async def quick_add(
                 "quick-add download failed: %s",
                 e,
             )
-
     file_url = None
-
     if paper_bytes:
-        file_url = upload_bytes(
+        file_url = await upload_bytes(
             paper_bytes,
             f"papers/{uuid.uuid4()}.pdf",
             "application/pdf",
         )
-
     thumb = generate_thumbnail(
         meta["title"],
         str(uuid.uuid4()),
     )
-
-    thumb_url = upload_bytes(
+    thumb_url = await upload_bytes(
         thumb,
         f"thumbs/{uuid.uuid4()}.jpg",
         "image/jpeg",
     )
-
     paper = Paper(
         title=meta["title"],
         authors=meta.get("authors"),
@@ -1886,10 +1580,8 @@ async def quick_add(
         file_url=file_url,
         thumbnail_url=thumb_url,
     )
-
     db.add(paper)
     db.flush()
-
     db.add(
         Activity(
             paper_id=paper.id,
@@ -1897,7 +1589,6 @@ async def quick_add(
             details=meta["title"],
         )
     )
-
     if file_url:
         try:
             analyze_paper(
@@ -1911,30 +1602,23 @@ async def quick_add(
                 "quick-add analysis failed: %s",
                 e,
             )
-
     db.commit()
     db.refresh(paper)
-
     return _serialize_paper(paper)
-
-
 # =========================================================
 # COLLECTIONS
 # =========================================================
-
 @router.post("/collections")
 def create_collection(
     payload: dict = Body(...),
     db: Session = Depends(get_db),
 ):
     name = payload.get("name")
-
     if not name:
         raise HTTPException(
             status_code=400,
             detail="name required",
         )
-
     existing = (
         db.query(Collection)
         .filter(
@@ -1942,13 +1626,11 @@ def create_collection(
         )
         .first()
     )
-
     if existing:
         raise HTTPException(
             status_code=409,
             detail="Collection name already exists",
         )
-
     c = Collection(
         name=name,
         description=payload.get(
@@ -1958,19 +1640,15 @@ def create_collection(
             "category"
         ),
     )
-
     db.add(c)
     db.commit()
     db.refresh(c)
-
     return {
         "id": str(c.id),
         "name": c.name,
         "description": c.description,
         "category": c.category,
     }
-
-
 @router.get("/collections")
 def list_collections(
     db: Session = Depends(get_db),
@@ -1982,9 +1660,7 @@ def list_collections(
         )
         .all()
     )
-
     out = []
-
     for c in cols:
         count = (
             db.query(CollectionPaper)
@@ -1994,7 +1670,6 @@ def list_collections(
             )
             .count()
         )
-
         out.append(
             {
                 "id": str(c.id),
@@ -2004,10 +1679,7 @@ def list_collections(
                 "paper_count": count,
             }
         )
-
     return out
-
-
 @router.post(
     "/collections/{collection_id}/papers"
 )
@@ -2017,16 +1689,13 @@ def add_to_collection(
     db: Session = Depends(get_db),
 ):
     paper_id = payload.get("paper_id")
-
     if not paper_id:
         raise HTTPException(
             status_code=400,
             detail="paper_id required",
         )
-
     cid = uuid.UUID(collection_id)
     pid_val = pid(paper_id)
-
     exists = (
         db.query(CollectionPaper)
         .filter(
@@ -2035,7 +1704,6 @@ def add_to_collection(
         )
         .first()
     )
-
     if not exists:
         db.add(
             CollectionPaper(
@@ -2044,12 +1712,9 @@ def add_to_collection(
             )
         )
         db.commit()
-
     return {
         "added": True,
     }
-
-
 @router.delete(
     "/collections/{collection_id}/papers"
 )
@@ -2060,7 +1725,6 @@ def remove_from_collection(
 ):
     cid = uuid.UUID(collection_id)
     pid_val = pid(paper_id)
-
     row = (
         db.query(CollectionPaper)
         .filter(
@@ -2069,16 +1733,12 @@ def remove_from_collection(
         )
         .first()
     )
-
     if row:
         db.delete(row)
         db.commit()
-
     return {
         "removed": True,
     }
-
-
 @router.get(
     "/collections/{collection_id}/papers"
 )
@@ -2087,7 +1747,6 @@ def collection_papers(
     db: Session = Depends(get_db),
 ):
     cid = uuid.UUID(collection_id)
-
     rows = (
         db.query(CollectionPaper)
         .filter(
@@ -2095,19 +1754,15 @@ def collection_papers(
         )
         .all()
     )
-
     papers = [
         db.get(Paper, r.paper_id)
         for r in rows
     ]
-
     return [
         _serialize_paper(p)
         for p in papers
         if p
     ]
-
-
 @router.post(
     "/collections/{collection_id}/export"
 )
@@ -2117,23 +1772,19 @@ def export_collection(
     db: Session = Depends(get_db),
 ):
     cid = uuid.UUID(collection_id)
-
     c = db.get(
         Collection,
         cid,
     )
-
     if not c:
         raise HTTPException(
             status_code=404,
             detail="Collection not found",
         )
-
     out_format = (
         payload.get("format")
         or "markdown"
     ).lower()
-
     rows = (
         db.query(CollectionPaper)
         .filter(
@@ -2141,31 +1792,25 @@ def export_collection(
         )
         .all()
     )
-
     papers = [
         db.get(Paper, r.paper_id)
         for r in rows
     ]
-
     papers = [
         p for p in papers if p
     ]
-
     md = (
         f"# Reading List: {c.name}\n\n"
     )
-
     if c.description:
         md += (
             f"{c.description}\n\n"
         )
-
     md += (
         f"_Exported {datetime.now().date()} "
         f"- {len(papers)} papers_\n\n"
         "---\n\n"
     )
-
     for idx, p in enumerate(
         papers,
         1,
@@ -2180,7 +1825,6 @@ def export_collection(
             )
             .first()
         )
-
         e = (
             db.query(KeyElements)
             .filter(
@@ -2188,50 +1832,40 @@ def export_collection(
             )
             .first()
         )
-
         md += (
             f"## {idx}. {p.title}\n"
         )
-
         md += (
             f"**Authors:** "
             f"{', '.join(p.authors or [])}\n"
         )
-
         md += (
             f"**Source:** "
             f"{p.source_type}"
         )
-
         if p.reading_time_minutes:
             md += (
                 f" - ~{p.reading_time_minutes} min read"
             )
-
         if p.complexity_level:
             md += (
                 f" - complexity: "
                 f"{p.complexity_level}"
             )
-
         md += "\n"
-
         if p.keywords:
             md += (
                 f"**Keywords:** "
                 f"{', '.join(p.keywords)}\n"
             )
-
         if p.abstract:
             md += (
                 f"\n> {p.abstract}\n"
             )
-
         if s:
             md += (
                 f"\n{s.executive_summary}\n"
             )
-
             if s.key_findings:
                 md += (
                     "\n**Key findings:**\n"
@@ -2241,7 +1875,6 @@ def export_collection(
                     )
                     + "\n"
                 )
-
         if e:
             for label, val in [
                 ("Problem", e.problem),
@@ -2256,9 +1889,7 @@ def export_collection(
                         f"\n### {label}\n"
                         f"{val}\n"
                     )
-
         md += "\n---\n\n"
-
     if out_format == "bibtex":
         bib = "\n".join(
             (
@@ -2276,22 +1907,17 @@ def export_collection(
                 1,
             )
         )
-
         return Response(
             content=bib,
             media_type="application/x-bibtex",
         )
-
     return Response(
         content=md,
         media_type="text/markdown",
     )
-
-
 # =========================================================
 # NOTES
 # =========================================================
-
 @router.post(
     "/papers/{paper_id}/notes"
 )
@@ -2301,14 +1927,12 @@ def add_note(
     db: Session = Depends(get_db),
 ):
     tags = payload.get("tags") or []
-
     if isinstance(tags, str):
         tags = [
             t.strip()
             for t in tags.split(",")
             if t.strip()
         ]
-
     n = Note(
         paper_id=pid(paper_id),
         note_text=payload.get(
@@ -2316,9 +1940,7 @@ def add_note(
         ),
         tags=tags,
     )
-
     db.add(n)
-
     db.add(
         Activity(
             paper_id=pid(paper_id),
@@ -2331,17 +1953,13 @@ def add_note(
             )[:120],
         )
     )
-
     db.commit()
     db.refresh(n)
-
     return {
         "id": str(n.id),
         "note_text": n.note_text,
         "tags": n.tags or [],
     }
-
-
 @router.get(
     "/papers/{paper_id}/notes"
 )
@@ -2359,7 +1977,6 @@ def get_notes(
         )
         .all()
     )
-
     return [
         {
             "id": str(r.id),
@@ -2368,12 +1985,9 @@ def get_notes(
         }
         for r in rows
     ]
-
-
 # =========================================================
 # ACTIVITY
 # =========================================================
-
 @router.post(
     "/papers/{paper_id}/activity"
 )
@@ -2392,15 +2006,11 @@ def log_activity(
             "details"
         ),
     )
-
     db.add(a)
     db.commit()
-
     return {
         "logged": True,
     }
-
-
 @router.get(
     "/papers/{paper_id}/activity"
 )
@@ -2419,7 +2029,6 @@ def get_activity(
         )
         .all()
     )
-
     return [
         {
             "action": r.action,
@@ -2432,8 +2041,6 @@ def get_activity(
         }
         for r in rows
     ]
-
-
 @router.get("/activity")
 def global_activity(
     db: Session = Depends(get_db),
@@ -2453,7 +2060,6 @@ def global_activity(
         .limit(50)
         .all()
     )
-
     return [
         {
             "action": a.action,

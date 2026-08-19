@@ -1,31 +1,32 @@
-"""File handling: Vercel Blob upload/download + deterministic thumbnails.
-
-Iteration 10 lesson: DOCX thumbnails were added late and used non-deterministic
-colors. We generate a deterministic color per paper id and a text-based
-thumbnail so every paper (PDF or DOCX) always has a cover image.
 """
-import os
+File handling for Vercel Blob.
+
+Uses the official Vercel Python Blob SDK in production.
+Falls back to local .blobs storage during local development.
+"""
+
 import io
 import logging
-import requests
+import os
+from pathlib import Path
+
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger("file_handler")
 
-BLOB_BASE = "https://blob.vercel-storage.com"
 BLOB_TOKEN = os.getenv("BLOB_READ_WRITE_TOKEN")
 
-# Local-disk fallback so the app runs without a Vercel Blob token (dev only).
-LOCAL_BLOB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".blobs")
+LOCAL_BLOB_DIR = Path(__file__).resolve().parent / ".blobs"
 
 
 def is_cloud() -> bool:
+    """Return True when Vercel Blob credentials are available."""
     return bool(BLOB_TOKEN)
 
 
-def _local_path(name: str) -> str:
-    os.makedirs(LOCAL_BLOB_DIR, exist_ok=True)
-    return os.path.join(LOCAL_BLOB_DIR, name)
+def _local_path(name: str) -> Path:
+    LOCAL_BLOB_DIR.mkdir(parents=True, exist_ok=True)
+    return LOCAL_BLOB_DIR / name
 
 
 def get_deterministic_color(paper_id: str) -> str:
@@ -34,73 +35,201 @@ def get_deterministic_color(paper_id: str) -> str:
 
 
 def _hsl_to_rgb(hsl: str):
-    # crude hsl->rgb for thumbnail background
+    """Convert HSL string to RGB."""
     import colorsys
-    nums = hsl.replace("hsl(", "").replace(")", "").split(",")
+
+    nums = (
+        hsl.replace("hsl(", "")
+        .replace(")", "")
+        .split(",")
+    )
+
     h = int(nums[0]) / 360.0
     s = float(nums[1].strip().rstrip("%")) / 100.0
     l = float(nums[2].strip().rstrip("%")) / 100.0
+
     r, g, b = colorsys.hls_to_rgb(h, l, s)
-    return int(r * 255), int(g * 255), int(b * 255)
+
+    return (
+        int(r * 255),
+        int(g * 255),
+        int(b * 255),
+    )
 
 
-def generate_thumbnail(title: str, paper_id: str, size=(400, 520)) -> bytes:
+def generate_thumbnail(
+    title: str,
+    paper_id: str,
+    size=(400, 520),
+) -> bytes:
+    """Generate deterministic paper thumbnail."""
+
     bg = get_deterministic_color(paper_id)
     rgb = _hsl_to_rgb(bg)
+
     img = Image.new("RGB", size, rgb)
     draw = ImageDraw.Draw(img)
-    # title text, wrapped
+
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
+        font = ImageFont.truetype(
+            "DejaVuSans-Bold.ttf",
+            26,
+        )
     except IOError:
         font = ImageFont.load_default()
+
     words = (title or "Untitled").split()
-    lines, cur = [], ""
-    for w in words:
-        if len(cur + " " + w) > 22:
-            lines.append(cur)
-            cur = w
+
+    lines = []
+    current = ""
+
+    for word in words:
+        candidate = f"{current} {word}".strip()
+
+        if len(candidate) > 22:
+            if current:
+                lines.append(current)
+
+            current = word
         else:
-            cur = (cur + " " + w).strip()
-    if cur:
-        lines.append(cur)
+            current = candidate
+
+    if current:
+        lines.append(current)
+
     lines = lines[:10]
+
     y = 40
+
     for line in lines:
-        draw.text((20, y), line, fill="white", font=font)
-        y += 34
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    return buf.getvalue()
-
-
-def upload_bytes(data: bytes, pathname: str, content_type: str = "application/octet-stream") -> str:
-    """Upload bytes to Vercel Blob (cloud) or local disk (dev fallback)."""
-    if is_cloud():
-        resp = requests.put(
-            f"{BLOB_BASE}?pathname={requests.utils.quote(pathname)}",
-            headers={
-                "Authorization": f"Bearer {BLOB_TOKEN}",
-                "x-api-version": "3",
-                "Content-Type": content_type,
-            },
-            data=data,
-            timeout=60,
+        draw.text(
+            (20, y),
+            line,
+            fill="white",
+            font=font,
         )
-        resp.raise_for_status()
-        return resp.json()["url"]
-    # Dev fallback: write to local .blobs directory
+        y += 34
+
+    buffer = io.BytesIO()
+
+    img.save(
+        buffer,
+        format="JPEG",
+    )
+
+    return buffer.getvalue()
+
+
+async def upload_bytes(
+    data: bytes,
+    pathname: str,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """
+    Upload bytes to Vercel Blob in production.
+
+    Uses local disk when running without Vercel Blob credentials.
+    """
+
+    if is_cloud():
+        from vercel.blob import AsyncBlobClient
+
+        try:
+            client = AsyncBlobClient()
+
+            blob = await client.put(
+                pathname,
+                data,
+                access="private",
+                content_type=content_type,
+                add_random_suffix=False,
+            )
+
+            logger.info(
+                "Uploaded blob successfully: %s",
+                blob.url,
+            )
+
+            return blob.url
+
+        except Exception:
+            logger.exception(
+                "Vercel Blob upload failed for %s",
+                pathname,
+            )
+            raise
+
+    # ---------------------------------------------------------
+    # Local development fallback
+    # ---------------------------------------------------------
+
     filename = os.path.basename(pathname)
-    with open(_local_path(filename), "wb") as f:
+
+    local_file = _local_path(filename)
+
+    with open(local_file, "wb") as f:
         f.write(data)
+
+    logger.info(
+        "Saved file locally: %s",
+        local_file,
+    )
+
     return f"local://{filename}"
 
 
-def download_bytes(url: str) -> bytes:
-    if url and url.startswith("local://"):
-        with open(_local_path(url[len("local://"):]), "rb") as f:
-            return f.read()
-    resp = requests.get(url, timeout=60)
-    resp.raise_for_status()
-    return resp.content
+async def download_bytes(url: str) -> bytes:
+    """
+    Download a file from local storage or Vercel Blob.
+    """
 
+    if url and url.startswith("local://"):
+        filename = url[len("local://") :]
+
+        with open(
+            _local_path(filename),
+            "rb",
+        ) as f:
+            return f.read()
+
+    if is_cloud():
+        from vercel.blob import AsyncBlobClient
+
+        client = AsyncBlobClient()
+
+        # Extract pathname from the stored Blob URL.
+        marker = ".blob.vercel-storage.com/"
+
+        if marker in url:
+            pathname = url.split(marker, 1)[1]
+        else:
+            pathname = url
+
+        result = await client.get(
+            pathname,
+            access="private",
+        )
+
+        if result is None or result.status_code != 200:
+            raise FileNotFoundError(
+                f"Blob not found: {pathname}"
+            )
+
+        chunks = []
+
+        async for chunk in result.stream:
+            chunks.append(chunk)
+
+        return b"".join(chunks)
+
+    # Local/non-cloud URL fallback
+    import requests
+
+    response = requests.get(
+        url,
+        timeout=60,
+    )
+
+    response.raise_for_status()
+
+    return response.content
