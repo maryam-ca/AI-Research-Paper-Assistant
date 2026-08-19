@@ -1,13 +1,12 @@
 import os
 from dotenv import load_dotenv
 
-# Load .env.local from the frontend/ directory (parent of frontend/api/)
+# Load .env.local from the frontend/ directory (parent of frontend/app/)
 _ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env.local")
 load_dotenv(_ENV_PATH)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from mangum import Mangum
 
 from routes import router
 
@@ -30,10 +29,8 @@ app.add_middleware(
 
 app.include_router(router)
 
-
-@app.get("/")
-def root():
-    return {"service": "ScholarFlow API", "docs": "/docs"}
-
-
-handler = Mangum(app)
+# Serve the built SPA (frontend/dist) as the fallback for non-API routes.
+# Path operations (e.g. /api/...) always take precedence over frontend files.
+_DIST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dist")
+if os.path.isdir(_DIST):
+    app.frontend("/", directory=_DIST, fallback="index.html")
