@@ -1,52 +1,63 @@
 {
   "version": 2,
-  "builds": [
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
     {
-      "src": "api/index.py",
-      "use": "@vercel/python"
-    },
-    {
-      "src": "dist/**",
-      "use": "@vercel/static"
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
     }
   ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60
     }
-  ],
+  },
   "headers": [
     {
       "source": "/assets/(.*)\\.js",
-      "headers": [{ "key": "Content-Type", "value": "application/javascript" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/javascript"
+        }
+      ]
     },
     {
       "source": "/assets/(.*)\\.css",
-      "headers": [{ "key": "Content-Type", "value": "text/css" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/css"
+        }
+      ]
     },
     {
       "source": "/assets/(.*)\\.svg",
-      "headers": [{ "key": "Content-Type", "value": "image/svg+xml" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "image/svg+xml"
+        }
+      ]
     },
     {
       "source": "/favicon\\.svg",
-      "headers": [{ "key": "Content-Type", "value": "image/svg+xml" }]
-    },
-    {
-      "source": "/assets/(.*)\\.woff",
-      "headers": [{ "key": "Content-Type", "value": "font/woff" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "image/svg+xml"
+        }
+      ]
     },
     {
       "source": "/assets/(.*)\\.woff2",
-      "headers": [{ "key": "Content-Type", "value": "font/woff2" }]
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "font/woff2"
+        }
+      ]
     }
   ]
 }
