@@ -1,7 +1,7 @@
 """RAG Q&A agent: retrieve relevant chunks and answer with page citations."""
-from llm_client import generate_with_fallback
-from vectorstore import search_similar
-from utils import fill
+from app.llm_client import generate_with_fallback
+from app.vectorstore import search_similar
+from app.utils import fill
 
 QA_TEMPLATE = """You are a research assistant answering questions about a specific
 paper. Use ONLY the excerpts below. Cite the page numbers that support your
@@ -60,3 +60,4 @@ def answer_question(db, paper_id, question: str, top_k: int = 5, suggest: bool =
 
     cited_pages = sorted({c["page"] for c in chunks if c["page"]})
     return {"answer": answer.strip(), "cited_pages": cited_pages}
+

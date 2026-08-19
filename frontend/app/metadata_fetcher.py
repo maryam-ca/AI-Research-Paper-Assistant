@@ -84,3 +84,4 @@ def fetch_url_metadata(url: str) -> dict:
         "pdf_url": url,
         "source_id": url,
     }
+

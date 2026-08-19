@@ -6,8 +6,8 @@ extension required, so it runs on a bare local Postgres or Neon alike.
 import json
 import logging
 from sqlalchemy import select
-from models import Chunk
-from llm_client import embed_text
+from app.models import Chunk
+from app.llm_client import embed_text
 
 logger = logging.getLogger("vectorstore")
 
@@ -77,7 +77,7 @@ def _centroid(vecs):
 
 def similar_papers(db, paper_id, top_k: int = 5):
     """Rank other papers by embedding similarity to the target paper's centroid."""
-    from models import Paper
+    from app.models import Paper
     from collections import defaultdict
 
     rows = db.execute(select(Chunk.paper_id, Chunk.embedding)).fetchall()
@@ -107,3 +107,4 @@ def similar_papers(db, paper_id, top_k: int = 5):
     ids = [pid for pid, _ in top]
     papers = {p.id: p for p in db.query(Paper).filter(Paper.id.in_(ids)).all()}
     return [(papers[pid], score) for pid, score in top if pid in papers]
+

@@ -89,3 +89,4 @@ def process_document(file_bytes: bytes, source_type: str):
         pages = extract_text_from_pdf(file_bytes)
     full_text = "\n".join(p["text"] for p in pages)
     return pages, full_text
+

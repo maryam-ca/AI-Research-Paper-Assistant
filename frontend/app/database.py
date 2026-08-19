@@ -1,33 +1,83 @@
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from sqlalchemy.pool import NullPool
+from pathlib import Path
 
-Base = declarative_base()
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+
+# =========================================================
+# ENVIRONMENT
+# =========================================================
+
+# frontend/
+FRONTEND_DIR = Path(__file__).resolve().parent.parent
+
+# Local environment file
+ENV_FILE = FRONTEND_DIR / ".env.local"
+
+# Load .env.local for local development.
+# On Vercel, DATABASE_URL comes from Vercel Environment Variables.
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
+
+
+# =========================================================
+# DATABASE URL
+# =========================================================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is not set")
+    raise RuntimeError(
+        "DATABASE_URL environment variable is not set. "
+        "Set DATABASE_URL in frontend/.env.local for local "
+        "development or in Vercel Environment Variables "
+        "for production."
+    )
 
-# On serverless (Vercel) each invocation gets a fresh process, so a small pool
-# is appropriate. pool_pre_ping guards against stale connections after Neon
-# suspends idle connections. We avoid NullPool so a warm container can reuse
-# connections across requests.
+
+# =========================================================
+# SQLALCHEMY BASE
+# =========================================================
+
+Base = declarative_base()
+
+
+# =========================================================
+# DATABASE ENGINE
+# =========================================================
+
+engine_kwargs = {
+    "pool_pre_ping": True,
+}
+
+
+# Neon/PostgreSQL and local PostgreSQL
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    pool_recycle=1800,
+    **engine_kwargs,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# =========================================================
+# SESSION
+# =========================================================
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
 
 
-def get_db() -> Session:
-    """FastAPI dependency that yields a session and always closes it."""
+# =========================================================
+# FASTAPI DATABASE DEPENDENCY
+# =========================================================
+
+def get_db():
     db = SessionLocal()
+
     try:
         yield db
     finally:

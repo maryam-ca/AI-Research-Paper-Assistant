@@ -1,16 +1,16 @@
 """Full analysis pipeline: extract -> chunk -> embed -> summarize -> extract elements."""
 import logging
-from models import Paper, Summary, KeyElements, Activity, Chunk
-from document_processor import process_document, chunk_text
-from vectorstore import store_embeddings
-from summarizer import (
+from app.models import Paper, Summary, KeyElements, Activity, Chunk
+from app.document_processor import process_document, chunk_text
+from app.vectorstore import store_embeddings
+from app.summarizer import (
     generate_executive_summary,
     generate_detailed_summary,
     extract_key_findings,
 )
-from extractor import extract_key_elements, FIELDS
-from llm_client import generate_with_fallback
-from utils import fill, extract_json
+from app.extractor import extract_key_elements, FIELDS
+from app.llm_client import generate_with_fallback
+from app.utils import fill, extract_json
 
 logger = logging.getLogger("pipeline")
 
@@ -92,7 +92,7 @@ DIFF_FIELDS = ["problem", "methodology", "results", "limitations", "contribution
 
 
 def compare_papers(db, paper_ids: list) -> dict:
-    from models import Paper, KeyElements, Summary
+    from app.models import Paper, KeyElements, Summary
     papers = []
     for pid in paper_ids:
         p = db.get(Paper, pid)
@@ -122,3 +122,4 @@ def compare_papers(db, paper_ids: list) -> dict:
         "findings": data.get("findings", {}),
         "differences": data.get("differences", []),
     }
+

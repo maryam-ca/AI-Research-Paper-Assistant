@@ -36,3 +36,4 @@ def fill(template: str, **kwargs) -> str:
     for key, value in kwargs.items():
         out = out.replace("{{" + key + "}}", str(value))
     return out
+

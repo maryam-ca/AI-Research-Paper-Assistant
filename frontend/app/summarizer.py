@@ -2,8 +2,8 @@
 and are filled via utils.fill() (NOT str.format) so literal JSON braces in
 other prompts are never mangled.
 """
-from llm_client import generate_with_fallback
-from utils import fill
+from app.llm_client import generate_with_fallback
+from app.utils import fill
 
 EXEC_TEMPLATE = """You are a research assistant. Read the following paper excerpt and
 write a concise executive summary (2-3 paragraphs, plain language) that captures
@@ -71,3 +71,4 @@ def extract_key_findings(paper_text: str) -> list:
         for l in text.splitlines()
         if l.strip() and not l.strip().startswith("```")
     ]
+

@@ -1,7 +1,7 @@
 """Tier 3 migration: research_questions table + reproducibility/quality_flags columns.
 Run with backend venv:  python migrate_tier3.py
 """
-from database import engine
+from app.database import engine
 from sqlalchemy import text
 
 STATEMENTS = [
@@ -32,3 +32,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

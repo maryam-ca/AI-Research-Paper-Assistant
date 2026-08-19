@@ -1,7 +1,7 @@
 """Tier 2 migration: add rigor_score and bias_risk columns to papers.
 Run with backend venv:  python migrate_tier2.py
 """
-from database import engine
+from app.database import engine
 from sqlalchemy import text
 
 STATEMENTS = [
@@ -21,3 +21,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

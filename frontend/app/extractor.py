@@ -1,6 +1,6 @@
 """Key-element extraction. Returns structured JSON with escaped placeholders."""
-from llm_client import generate_with_fallback
-from utils import fill, extract_json
+from app.llm_client import generate_with_fallback
+from app.utils import fill, extract_json
 
 ELEMENTS_TEMPLATE = """Extract the following structured elements from the research
 paper. Respond with ONLY a JSON object (no markdown) using exactly these keys:
@@ -75,3 +75,4 @@ def extract_key_elements(paper_text: str) -> dict:
     result["quality_flags"] = [str(f) for f in flags if str(f).strip()][:6]
 
     return result
+

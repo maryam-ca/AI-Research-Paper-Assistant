@@ -4,8 +4,8 @@ All use Gemini via generate_with_fallback and return structured data plus a
 ready-to-download Markdown rendering where useful.
 """
 import logging
-from llm_client import generate_with_fallback
-from utils import fill, extract_json
+from app.llm_client import generate_with_fallback
+from app.utils import fill, extract_json
 
 logger = logging.getLogger("synthesis")
 
@@ -111,3 +111,4 @@ def generate_compare_matrix(papers_block: str) -> list:
             row[f] = item.get(f, "")
         rows.append(row)
     return rows
+

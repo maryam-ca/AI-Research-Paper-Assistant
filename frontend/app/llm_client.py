@@ -69,3 +69,4 @@ def embed_text(text: str) -> list[float]:
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Batch embed; falls back to sequential on any batch error."""
     return [embed_text(t) for t in texts]
+

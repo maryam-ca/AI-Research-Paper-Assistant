@@ -103,3 +103,4 @@ def download_bytes(url: str) -> bytes:
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
     return resp.content
+

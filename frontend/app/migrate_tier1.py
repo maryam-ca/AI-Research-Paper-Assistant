@@ -2,7 +2,7 @@
 the `highlights` table. Safe to re-run (uses IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
 Run with the backend venv:  python migrate_tier1.py
 """
-from database import engine
+from app.database import engine
 from sqlalchemy import text
 
 STATEMENTS = [
@@ -40,3 +40,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
