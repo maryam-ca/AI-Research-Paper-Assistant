@@ -41,7 +41,11 @@
       "headers": [{ "key": "Content-Type", "value": "image/svg+xml" }]
     },
     {
-      "source": "/assets/(.*)\\.woff2?",
+      "source": "/assets/(.*)\\.woff",
+      "headers": [{ "key": "Content-Type", "value": "font/woff" }]
+    },
+    {
+      "source": "/assets/(.*)\\.woff2",
       "headers": [{ "key": "Content-Type", "value": "font/woff2" }]
     }
   ]
